@@ -14,10 +14,13 @@ import { CoworkerAvatar } from "./CoworkerAvatar";
 import type { ProjectPersona } from "./projectTeam.logic";
 import { useActivePersonaStore } from "./useProjectTeam";
 
+export const DISPATCHED_EMPLOYEES_STORAGE_KEY = "t3_squad_dispatched_employees_v2";
+
 export interface DispatchedEmployeeRecord {
   readonly threadKey: string;
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
+  readonly parentThreadKey?: string | undefined;
   readonly employeeLabel: string;
   readonly personaId: string;
   readonly personaName: string;
@@ -29,22 +32,95 @@ export interface DispatchedEmployeeRecord {
   readonly model: string;
   readonly taskSummary: string;
   readonly dispatchedAt: string;
+  readonly executionMode?: "simultaneous" | "sequential_contract" | undefined;
+  readonly phaseLabel?: string | undefined;
+}
+
+function loadPersistedDispatchedEmployees(): Record<string, DispatchedEmployeeRecord> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(DISPATCHED_EMPLOYEES_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") return {};
+    const result: Record<string, DispatchedEmployeeRecord> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!value || typeof value !== "object") continue;
+      const rec = value as Partial<DispatchedEmployeeRecord>;
+      if (
+        typeof rec.threadKey === "string" &&
+        typeof rec.environmentId === "string" &&
+        typeof rec.threadId === "string" &&
+        typeof rec.personaId === "string"
+      ) {
+        result[key] = rec as DispatchedEmployeeRecord;
+      }
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+function savePersistedDispatchedEmployees(records: Record<string, DispatchedEmployeeRecord>): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(DISPATCHED_EMPLOYEES_STORAGE_KEY, JSON.stringify(records));
+  } catch {
+    // Ignore storage quota or private mode errors
+  }
 }
 
 interface DispatchedEmployeesState {
   readonly recordsByThreadKey: Record<string, DispatchedEmployeeRecord>;
   readonly registerDispatchedEmployee: (record: DispatchedEmployeeRecord) => void;
+  readonly addDispatchedEmployee: (record: DispatchedEmployeeRecord) => void;
+  readonly removeDispatchedEmployee: (threadKey: string) => void;
+  readonly clearForParentThread: (parentThreadKey?: string) => void;
 }
 
 export const useDispatchedEmployeesStore = create<DispatchedEmployeesState>((set) => ({
-  recordsByThreadKey: {},
+  recordsByThreadKey: loadPersistedDispatchedEmployees(),
   registerDispatchedEmployee: (record) =>
-    set((state) => ({
-      recordsByThreadKey: {
+    set((state) => {
+      const next = {
         ...state.recordsByThreadKey,
         [record.threadKey]: record,
-      },
-    })),
+      };
+      savePersistedDispatchedEmployees(next);
+      return { recordsByThreadKey: next };
+    }),
+  addDispatchedEmployee: (record) =>
+    set((state) => {
+      const next = {
+        ...state.recordsByThreadKey,
+        [record.threadKey]: record,
+      };
+      savePersistedDispatchedEmployees(next);
+      return { recordsByThreadKey: next };
+    }),
+  removeDispatchedEmployee: (threadKey) =>
+    set((state) => {
+      const next = { ...state.recordsByThreadKey };
+      delete next[threadKey];
+      savePersistedDispatchedEmployees(next);
+      return { recordsByThreadKey: next };
+    }),
+  clearForParentThread: (parentThreadKey) =>
+    set((state) => {
+      if (!parentThreadKey) {
+        savePersistedDispatchedEmployees({});
+        return { recordsByThreadKey: {} };
+      }
+      const next: Record<string, DispatchedEmployeeRecord> = {};
+      for (const [key, rec] of Object.entries(state.recordsByThreadKey)) {
+        if (rec.parentThreadKey !== parentThreadKey) {
+          next[key] = rec;
+        }
+      }
+      savePersistedDispatchedEmployees(next);
+      return { recordsByThreadKey: next };
+    }),
 }));
 
 export interface LiveEmployeeViewItem {
@@ -64,6 +140,8 @@ export interface LiveEmployeeViewItem {
   readonly status: "working" | "waiting" | "error" | "ready";
   readonly statusText: string;
   readonly updatedAt: string;
+  readonly executionMode?: "simultaneous" | "sequential_contract" | undefined;
+  readonly phaseLabel?: string | undefined;
 }
 
 export function useLiveEmployeesList(input: {
@@ -162,6 +240,8 @@ export function useLiveEmployeesList(input: {
       status,
       statusText,
       updatedAt: shell.updatedAt,
+      ...(dispatched?.executionMode ? { executionMode: dispatched.executionMode } : {}),
+      ...(dispatched?.phaseLabel ? { phaseLabel: dispatched.phaseLabel } : {}),
     });
   }
 
@@ -267,6 +347,11 @@ export function ActiveEmployeesPanel({
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span className="font-semibold text-foreground">{item.employeeLabel}</span>
                       <span className="text-2xs text-muted-foreground">· {item.roleLabel}</span>
+                      {item.phaseLabel ? (
+                        <Badge variant="secondary" size="sm">
+                          {item.phaseLabel}
+                        </Badge>
+                      ) : null}
                       <Badge
                         variant={
                           item.status === "working"

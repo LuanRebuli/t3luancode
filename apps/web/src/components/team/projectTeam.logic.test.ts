@@ -10,12 +10,19 @@ import {
 import {
   buildPersonaSkillMarkdown,
   formatPersonaDirectModePrompt,
+  formatSquadWorkflowPrompt,
   parseProjectTeamConfig,
   resolveFallbackAccountSelection,
+  resolvePersonaShortRole,
+  resolveProviderBrandColor,
+  resolveProviderBrandLabel,
   serializeProjectTeamConfig,
+  SQUAD_PIPELINE_STAGES,
+  SQUAD_WORKFLOW_MODES,
   suggestProjectTeam,
   summarizeAccountLiveStatus,
 } from "./projectTeam.logic";
+import { parseSquadAssistantMessage, parseSquadUserMessage } from "./squadMessageParser";
 
 function makeMockProviderEntry(
   overrides: Partial<ProviderInstanceEntry> & {
@@ -293,5 +300,81 @@ describe("projectTeam.logic & productMap.logic", () => {
     expect(guardrails).toContain("Código é a Fonte da Verdade (Evoluído)");
     expect(guardrails).toContain("DONO DO CONTRATO");
     expect(guardrails).toContain("Contexto do workspace: Uarapoint");
+  });
+
+  it("resolves official AI brand colors, short roles, 3 workflow recipe modes, and strips internal tags in squadMessageParser", () => {
+    expect(resolveProviderBrandColor("claudeAgent", null)).toBe("#D97757");
+    expect(resolveProviderBrandColor("codex", undefined)).toBe("#10A37F");
+    expect(resolveProviderBrandColor("antigravity", "#6366f1")).toBe("#4E86F6");
+    expect(resolveProviderBrandColor("claudeAgent", "#e11d48")).toBe("#e11d48");
+
+    expect(resolveProviderBrandLabel("claudeAgent")).toBe("Claude");
+    expect(resolveProviderBrandLabel("codex")).toBe("Codex");
+    expect(resolveProviderBrandLabel("antigravity")).toBe("Gemini");
+
+    expect(SQUAD_WORKFLOW_MODES.map((m) => m.id)).toEqual([
+      "direct",
+      "mockup_turbo",
+      "full_pipeline",
+      "creative_studio",
+    ]);
+    expect(SQUAD_PIPELINE_STAGES.length).toBe(5);
+
+    const entries = [
+      makeMockProviderEntry({
+        instanceId: ProviderInstanceId.make("claude-a"),
+        displayName: "Claude Conta A",
+      }),
+    ];
+    const team = suggestProjectTeam({
+      projectName: "uarapoint-web",
+      projectCwd: "D:/Projects/uarapoint-web",
+      filePaths: ["src/Quiver3D.tsx"],
+      providerEntries: entries,
+    });
+
+    const nina = team.personas.find((p) => p.id === "lider" || p.id === "principal")!;
+    const dora = team.personas.find((p) => p.id === "design")!;
+    const quim = team.personas.find((p) => p.id === "qa")!;
+    expect(resolvePersonaShortRole(nina)).toBe("Líder");
+    expect(resolvePersonaShortRole(dora)).toBe("Design");
+    expect(resolvePersonaShortRole(quim)).toBe("QA E2E");
+
+    const workflowPrompt = formatSquadWorkflowPrompt({
+      mode: "mockup_turbo",
+      activePersona: dora,
+      teamConfig: team,
+      userMessageText: "Feche a tela de previsão de ondas mobile",
+      currentStage: "design",
+    });
+    expect(workflowPrompt).toContain("<squad_workflow_context");
+    expect(workflowPrompt).toContain('mode="mockup_turbo"');
+    expect(workflowPrompt).toContain("PORTAO_APROVACAO: mockup_tela");
+
+    const parsedUser = parseSquadUserMessage(
+      `<product_source_of_truth_guardrails>travado</product_source_of_truth_guardrails>\n<multi_repo_worktree_assignment>\nVocê foi escalado no repositório: **uarapoint-web** (\`D:/Projects/uarapoint-web\`).\n</multi_repo_worktree_assignment>\n${workflowPrompt}`,
+    );
+    expect(parsedUser.cleanText).toBe("Feche a tela de previsão de ondas mobile");
+    expect(parsedUser.badge).not.toBeNull();
+    expect(parsedUser.badge?.mode).toBe("mockup_turbo");
+    expect(parsedUser.badge?.personaName).toContain("Dora Lins");
+    expect(parsedUser.badge?.personaRole).toBe("Design");
+    expect(parsedUser.badge?.repoLabel).toContain("uarapoint-web");
+    expect(parsedUser.badge?.hasProductGuardrails).toBe(true);
+
+    const parsedAssistant = parseSquadAssistantMessage({
+      rawText:
+        "[COWORKER: Dora Lins | Design | @design]\nAjustei a tela mobile com estados vazio e carregado. Tá bonito e funciona.\n[PORTAO_APROVACAO: mockup_tela]",
+      personas: team.personas,
+    });
+    expect(parsedAssistant.cleanText).toBe(
+      "Ajustei a tela mobile com estados vazio e carregado. Tá bonito e funciona.",
+    );
+    expect(parsedAssistant.personaName).toContain("Dora Lins");
+    expect(parsedAssistant.personaRole).toBe("Design");
+    expect(parsedAssistant.detectedVerdict?.text).toBe("Tá bonito e funciona.");
+    expect(parsedAssistant.detectedVerdict?.kind).toBe("approve");
+    expect(parsedAssistant.approvalGate?.gateType).toBe("mockup_tela");
+    expect(parsedAssistant.approvalGate?.actions.length).toBeGreaterThanOrEqual(2);
   });
 });

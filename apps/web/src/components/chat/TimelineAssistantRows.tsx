@@ -5,7 +5,7 @@ import { agentWorkingDirectories } from "@t3tools/client-runtime/workspace-basen
 import { memo, use, useState } from "react";
 import { type ChatMessage, type TurnDiffSummary } from "../../types";
 import ChatMarkdown from "../ChatMarkdown";
-import { GitForkIcon, ReplyIcon } from "lucide-react";
+import { CheckCircle2Icon, GitForkIcon, ReplyIcon, ShieldCheckIcon } from "lucide-react";
 import { captureAssistantMessageOpening } from "~/lib/assistantTextSelection";
 import { responseContextRecord } from "~/lib/composerContextRecords";
 import { Button } from "../ui/button";
@@ -35,11 +35,18 @@ import { MESSAGE_HEADING_LEVEL, MessageAuthorHeading } from "./TimelineRowParts"
 import { useAtomValue } from "@effect/atom-react";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { vcsEnvironment } from "../../state/vcs";
+import { useComposerDraftStore } from "../../composerDraftStore";
+import { useComposerHandleContext } from "../../composerHandleContext";
+import { useDispatchedEmployeesStore } from "../team/ActiveEmployeesPanel";
+import { CoworkerAvatar } from "../team/CoworkerAvatar";
+import { parseSquadAssistantMessage } from "../team/squadMessageParser";
+import { useActivePersonaStore, useProjectTeam } from "../team/useProjectTeam";
 
 const NO_VCS_STATUS = Atom.make(AsyncResult.initial());
 
 export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
+  const composerHandleRef = useComposerHandleContext();
   // The timeline holds a streaming message's row while only its text grows.
   const liveText = useAssistantMessageText(
     row.message.streaming ? ctx.threadRef : null,
@@ -49,10 +56,79 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
   const messageText =
     text || (row.message.streaming || row.suppressEmptyResponse ? "" : "(empty response)");
 
+  const activePersona = useActivePersonaStore(
+    (s) => s.activePersonaByThreadKey[ctx.routeThreadKey] ?? null,
+  );
+  const dispatchedPersona = useDispatchedEmployeesStore(
+    (s) => s.recordsByThreadKey[ctx.routeThreadKey] ?? null,
+  );
+  const { teamConfig } = useProjectTeam({
+    environmentId: ctx.activeThreadEnvironmentId,
+    projectCwd: ctx.workspaceRoot ?? ctx.markdownCwd ?? null,
+    projectName: null,
+    providerInstanceEntries: [],
+  });
+
+  const squadAssistant = parseSquadAssistantMessage({
+    rawText: messageText,
+    activePersona,
+    dispatchedPersona,
+    personas: teamConfig.personas,
+  });
+
   return (
     <>
       <div className="relative min-w-0 px-1 py-0.5">
-        <MessageAuthorHeading>T3 Code</MessageAuthorHeading>
+        <MessageAuthorHeading>{squadAssistant.personaName ?? "T3 Code"}</MessageAuthorHeading>
+        {squadAssistant.personaName ? (
+          <div className="mb-1.5 flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1.5">
+              <CoworkerAvatar
+                color={squadAssistant.personaColor ?? "#6366f1"}
+                size="xs"
+                shape="orb"
+              />
+              <span className="text-xs font-semibold text-foreground">
+                {squadAssistant.personaName}
+              </span>
+              {squadAssistant.personaRole ? (
+                <span
+                  className="rounded-md px-1.5 py-0.5 text-3xs font-medium"
+                  style={
+                    squadAssistant.personaColor
+                      ? {
+                          backgroundColor: `${squadAssistant.personaColor}18`,
+                          color: squadAssistant.personaColor,
+                        }
+                      : undefined
+                  }
+                >
+                  {squadAssistant.personaRole}
+                </span>
+              ) : null}
+              {squadAssistant.personaHandle ? (
+                <span className="font-mono text-3xs text-muted-foreground">
+                  {squadAssistant.personaHandle}
+                </span>
+              ) : null}
+            </div>
+            {squadAssistant.detectedVerdict ? (
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-3xs font-semibold",
+                  squadAssistant.detectedVerdict.kind === "approve"
+                    ? "bg-success/15 text-success border border-success/30"
+                    : squadAssistant.detectedVerdict.kind === "reject"
+                      ? "bg-error/15 text-error border border-error/30"
+                      : "bg-info/15 text-info border border-info/30",
+                )}
+              >
+                {squadAssistant.detectedVerdict.kind === "approve" ? "✓" : "⚡"}{" "}
+                {squadAssistant.detectedVerdict.text}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
         <div data-thread-find-text="true">
           <AssistantCitationSource
             messageId={row.message.id}
@@ -62,7 +138,7 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
             listRef={ctx.listRef}
           >
             <ChatMarkdown
-              text={messageText}
+              text={squadAssistant.cleanText}
               renderInsights
               cwd={ctx.markdownCwd}
               agentDirectories={() =>
@@ -72,7 +148,7 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
               }
               threadRef={ctx.threadRef ?? undefined}
               isStreaming={Boolean(row.message.streaming)}
-              lineBreaks={shouldPreserveAssistantLineBreaks(messageText)}
+              lineBreaks={shouldPreserveAssistantLineBreaks(squadAssistant.cleanText)}
               skills={ctx.skills}
               headingLevelOffset={MESSAGE_HEADING_LEVEL}
               onUseArtifactTemplate={ctx.onUseArtifactTemplate}
@@ -81,6 +157,57 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
             />
           </AssistantCitationSource>
         </div>
+        {!row.message.streaming && squadAssistant.approvalGate ? (
+          <div className="mt-3 rounded-xl border border-primary/25 bg-primary/5 p-3">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5">
+                <ShieldCheckIcon className="size-4 text-primary" />
+                <span className="text-xs font-semibold text-foreground">
+                  {squadAssistant.approvalGate.title}
+                </span>
+              </div>
+              <span className="rounded-full bg-primary/15 px-2 py-0.5 text-3xs font-semibold text-primary">
+                Portão de Aprovação do Squad
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {squadAssistant.approvalGate.actions.map((action) => (
+                <Button
+                  key={action.id}
+                  type="button"
+                  size="xs"
+                  variant={action.variant === "approve" ? "default" : "outline"}
+                  onClick={() => {
+                    if (action.nextStageId) {
+                      useActivePersonaStore
+                        .getState()
+                        .setPipelineStage(ctx.routeThreadKey, action.nextStageId);
+                    }
+                    if (action.variant === "adjust") {
+                      if (ctx.threadRef) {
+                        useComposerDraftStore
+                          .getState()
+                          .setPrompt(ctx.threadRef, action.promptToSend);
+                      }
+                      composerHandleRef?.current?.resetCursorState({
+                        prompt: action.promptToSend,
+                        cursor: action.promptToSend.length,
+                      });
+                      composerHandleRef?.current?.focusAtEnd();
+                    } else if (ctx.onSendAppMessage) {
+                      void ctx.onSendAppMessage(action.promptToSend);
+                    }
+                  }}
+                >
+                  {action.variant === "approve" ? (
+                    <CheckCircle2Icon className="mr-1 size-3.5" />
+                  ) : null}
+                  {action.label}
+                </Button>
+              ))}
+            </div>
+          </div>
+        ) : null}
         {ctx.onOpenTurnDiff ? (
           <AssistantChangedFilesSection
             turnSummary={row.assistantTurnDiffSummary}

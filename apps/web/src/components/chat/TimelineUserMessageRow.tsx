@@ -43,6 +43,7 @@ import {
   Redo2Icon,
   PencilIcon,
   LinkIcon,
+  ShieldCheckIcon,
 } from "lucide-react";
 import { Button, InlineButton } from "../ui/button";
 import { FreshSessionRow, ModelSwitchRow } from "./V2LifecycleRow";
@@ -97,6 +98,7 @@ import {
   resolvePreviewAnnotationImage,
   userMessageFileLabel,
 } from "./TimelineUserMessageRow.logic";
+import { parseSquadUserMessage } from "../team/squadMessageParser";
 
 // Drawn inside the media so dark screenshots keep an edge on the dark background.
 const MEDIA_EDGE_CLASS_NAME =
@@ -480,9 +482,11 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
     senderRef !== null &&
     (row.message.linkedSender === undefined || linkedSenderEnvironment !== null);
   const resolvedContext = resolveUserMessageContext({ ...row.message, text: userMessage.text });
+  const squadParsed = parseSquadUserMessage(resolvedContext.text);
+  const displayUserText = squadParsed.cleanText;
   const previewImages = userImages.filter((image) => image.name.startsWith("preview-annotation-"));
   const revertTurnCount = row.revertTurnCount;
-  const attachmentReferences = collectComposerContextReferences(resolvedContext.text).flatMap(
+  const attachmentReferences = collectComposerContextReferences(displayUserText).flatMap(
     (occurrence) => {
       const record = asKnownContextRecord(resolvedContext.recordsById.get(occurrence.contextId));
       return record?.kind === "file" || record?.kind === "image"
@@ -505,7 +509,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   const mediaOnly =
     !folded &&
     userMessage.attribution !== "guest" &&
-    resolvedContext.text.trim() === "" &&
+    displayUserText.trim() === "" &&
     userAudio.length === 0 &&
     unchippedFiles.length === 0 &&
     unknownAttachments.length === 0 &&
@@ -536,7 +540,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
     userMessage.attribution !== "guest" &&
     otherUserFiles.length > 0 &&
     regularImages.length + userVideos.length + userAudio.length + unknownAttachments.length === 0 &&
-    replaceComposerContextReferences(resolvedContext.text, (reference) =>
+    replaceComposerContextReferences(displayUserText, (reference) =>
       attachmentReferences.some(
         (attached) =>
           attached.contextId === reference.contextId &&
@@ -551,7 +555,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
     userAudio.length > 0 &&
     regularImages.length + userVideos.length + otherUserFiles.length + unknownAttachments.length ===
       0 &&
-    replaceComposerContextReferences(resolvedContext.text, (reference) =>
+    replaceComposerContextReferences(displayUserText, (reference) =>
       attachmentReferences.some(
         (attached) =>
           attached.contextId === reference.contextId &&
@@ -564,7 +568,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
     .filter((record) => record.kind === "preview-annotation")
     .map((record) => record.contextId);
   const plainText = replaceComposerContextReferences(
-    resolvedContext.text,
+    displayUserText,
     (reference) => reference.label,
   );
   const promptLink = promptLinkFor(plainText);
@@ -597,7 +601,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
           records: copyRecords,
         });
   const copyText =
-    resolvedContext.text || mediaCopyRecords.map(formatComposerContextReference).join("\n");
+    displayUserText || mediaCopyRecords.map(formatComposerContextReference).join("\n");
   const copySnapshot = async (id: string) => {
     const image = userImages.find((candidate) => candidate.id === id);
     const record = resolvedContext.records
@@ -938,13 +942,60 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
           <div
             ref={folded ? revealFoldRef : undefined}
             hidden={folded && !expanded}
-            dir={markdownProseDirection(resolvedContext.text)}
+            dir={markdownProseDirection(displayUserText)}
             className={cn(
               folded && "px-3 pb-3",
               folded && !ctx.findActive && "max-h-96 overflow-auto",
             )}
           >
             {!mediaAboveText && mediaBlock}
+            {squadParsed.badge ? (
+              <div className="mb-2 flex flex-wrap items-center gap-1.5 border-b border-border/50 pb-1.5">
+                {squadParsed.badge.personaName ? (
+                  <span
+                    className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-3xs font-semibold"
+                    style={
+                      squadParsed.badge.personaColor
+                        ? {
+                            backgroundColor: `${squadParsed.badge.personaColor}20`,
+                            color: squadParsed.badge.personaColor,
+                            border: `1px solid ${squadParsed.badge.personaColor}45`,
+                          }
+                        : undefined
+                    }
+                  >
+                    {squadParsed.badge.personaIcon ? (
+                      <span>{squadParsed.badge.personaIcon}</span>
+                    ) : null}
+                    <span>{squadParsed.badge.personaName}</span>
+                    {squadParsed.badge.personaRole ? (
+                      <span className="opacity-80">· {squadParsed.badge.personaRole}</span>
+                    ) : null}
+                  </span>
+                ) : null}
+                {squadParsed.badge.modeLabel ? (
+                  <span className="rounded-full bg-primary/15 px-2 py-0.5 text-3xs font-semibold text-primary">
+                    {squadParsed.badge.modeLabel}
+                  </span>
+                ) : null}
+                {squadParsed.badge.stageLabel ? (
+                  <span className="rounded-full border border-border bg-background/60 px-2 py-0.5 text-3xs font-medium text-muted-foreground">
+                    {squadParsed.badge.stageLabel}
+                  </span>
+                ) : null}
+                {squadParsed.badge.repoLabel ? (
+                  <span className="rounded-full bg-info/15 px-2 py-0.5 text-3xs font-semibold text-info">
+                    Repo: {squadParsed.badge.repoLabel}
+                  </span>
+                ) : null}
+                {squadParsed.badge.hasProductGuardrails ? (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-3xs font-medium text-success">
+                    <ShieldCheckIcon className="size-2.5" />
+                    Mapa Protegido
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
             {userAudio.length > 0 ? (
               <div className={cn("flex max-w-full flex-col gap-1", !audioOnly && "mb-2")}>
                 {userAudio.map((file) => (
@@ -1053,7 +1104,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
             {fileCardsOnly || audioOnly ? null : (
               <div onCopyCapture={onBodyCopyCapture}>
                 <CollapsibleUserMessageBody
-                  text={resolvedContext.text}
+                  text={displayUserText}
                   renderContextReference={renderContextReference}
                   skills={ctx.skills}
                   markdownCwd={ctx.markdownCwd}

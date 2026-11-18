@@ -1,7 +1,16 @@
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { type EnvironmentId, type ProjectId, ProviderInstanceId } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
-import { BotIcon, FolderGit2Icon, PlusIcon, RocketIcon, Trash2Icon, UsersIcon } from "lucide-react";
+import {
+  BotIcon,
+  FolderGit2Icon,
+  LayersIcon,
+  PlusIcon,
+  RocketIcon,
+  Trash2Icon,
+  UsersIcon,
+  ZapIcon,
+} from "lucide-react";
 import { useState } from "react";
 import { newMessageId, newThreadId } from "../../lib/utils";
 import type { ProviderInstanceEntry } from "../../providerInstances";
@@ -26,6 +35,7 @@ import { Textarea } from "../ui/textarea";
 import { toastManager } from "../ui/toast";
 import {
   ActiveEmployeesPanel,
+  DISPATCHED_EMPLOYEES_STORAGE_KEY,
   type LiveEmployeeViewItem,
   useDispatchedEmployeesStore,
 } from "./ActiveEmployeesPanel";
@@ -40,6 +50,10 @@ import {
   type ProjectPersona,
 } from "./projectTeam.logic";
 import { readProductGuardrailsForProject, useActivePersonaStore } from "./useProjectTeam";
+
+export { DISPATCHED_EMPLOYEES_STORAGE_KEY, useDispatchedEmployeesStore };
+
+export type SquadDispatchExecutionMode = "simultaneous" | "sequential_contract";
 
 interface DispatchSlot {
   readonly slotId: string;
@@ -77,6 +91,42 @@ interface SquadDispatcherDialogProps {
   readonly providerEntries: ReadonlyArray<ProviderInstanceEntry>;
   readonly accountSummaries: ReadonlyArray<AccountLiveSummary>;
   readonly liveEmployees: ReadonlyArray<LiveEmployeeViewItem>;
+}
+
+function resolveSlotDependencyPhase(
+  slot: DispatchSlot,
+  repoOption: RepoTargetOption | undefined,
+  persona: ProjectPersona | undefined,
+): { readonly order: number; readonly label: string } {
+  const pid = slot.personaId.toLowerCase();
+  const roleKey = persona?.squadRoleKey ?? "";
+  const labelLower = slot.customLabel.toLowerCase();
+  const repoLower = slot.repoLabel.toLowerCase();
+
+  if (pid === "entrega" || roleKey === "entrega" || labelLower.includes("print")) {
+    return { order: 4, label: "4º Print Final & Entrega" };
+  }
+  if (
+    pid === "qa" ||
+    pid === "revisao" ||
+    roleKey === "qa" ||
+    roleKey === "revisao" ||
+    labelLower.includes("qa")
+  ) {
+    return { order: 3, label: "3º QA E2E & Variações" };
+  }
+  if (
+    pid === "dev-api" ||
+    pid === "spec" ||
+    roleKey === "spec" ||
+    repoOption?.donoDoContrato === true ||
+    labelLower.includes("api") ||
+    labelLower.includes("contrato") ||
+    repoLower.includes("api")
+  ) {
+    return { order: 1, label: "1º API Contrato 🔒" };
+  }
+  return { order: 2, label: "2º Design & Devs Web" };
 }
 
 function buildRepoOptions(input: {
@@ -209,12 +259,15 @@ export function SquadDispatcherDialog({
   };
 
   const buildInitialSlots = (): ReadonlyArray<DispatchSlot> => {
-    const devPersona = personas.find((p) => p.id === "dev") ?? personas[0];
+    const devPersona =
+      personas.find((p) => p.id === "dev" || p.id === "dev-web" || p.id === "dev-api") ??
+      personas[0];
     const designPersona = personas.find((p) => p.id === "design") ?? personas[1] ?? devPersona;
     if (!devPersona) return [];
     const apiRepo =
-      repoOptions.find((r) => r.id.includes("api") || r.label.toLowerCase().includes("api")) ??
-      repoOptions[0];
+      repoOptions.find(
+        (r) => r.donoDoContrato || r.id.includes("api") || r.label.toLowerCase().includes("api"),
+      ) ?? repoOptions[0];
     const webRepo =
       repoOptions.find((r) => r.id.includes("web") || r.label.toLowerCase().includes("web")) ??
       repoOptions[0];
@@ -250,33 +303,128 @@ export function SquadDispatcherDialog({
   };
 
   const [globalObjective, setGlobalObjective] = useState("");
+  const [executionMode, setExecutionMode] = useState<SquadDispatchExecutionMode>("simultaneous");
   const [slots, setSlots] = useState<ReadonlyArray<DispatchSlot>>(() => buildInitialSlots());
   const [isDispatching, setIsDispatching] = useState(false);
 
-  const applyPreset = (presetKind: "multi_repo_squad" | "dual_davi" | "triad_delivery") => {
-    const devPersona = personas.find((p) => p.id === "dev") ?? personas[0];
-    const designPersona = personas.find((p) => p.id === "design") ?? devPersona;
-    const qaPersona = personas.find((p) => p.id === "qa") ?? devPersona;
-    if (!devPersona) return;
+  const sortSlotsForSequentialMode = (
+    inputSlots: ReadonlyArray<DispatchSlot>,
+  ): ReadonlyArray<DispatchSlot> => {
+    return [...inputSlots].sort((left, right) => {
+      const leftRepo = repoOptions.find(
+        (r) =>
+          r.cwd.toLowerCase().replace(/\\/g, "/") ===
+          left.repoCwd.toLowerCase().replace(/\\/g, "/"),
+      );
+      const rightRepo = repoOptions.find(
+        (r) =>
+          r.cwd.toLowerCase().replace(/\\/g, "/") ===
+          right.repoCwd.toLowerCase().replace(/\\/g, "/"),
+      );
+      const leftPersona = personas.find((p) => p.id === left.personaId);
+      const rightPersona = personas.find((p) => p.id === right.personaId);
+      const leftPhase = resolveSlotDependencyPhase(left, leftRepo, leftPersona);
+      const rightPhase = resolveSlotDependencyPhase(right, rightRepo, rightPersona);
+      return leftPhase.order - rightPhase.order;
+    });
+  };
+
+  const handleSelectExecutionMode = (nextMode: SquadDispatchExecutionMode) => {
+    setExecutionMode(nextMode);
+    if (nextMode === "sequential_contract") {
+      setSlots((current) => sortSlotsForSequentialMode(current));
+    }
+  };
+
+  const applyPreset = (
+    presetKind:
+      | "mockup_turbo"
+      | "squad_completo_sequencial"
+      | "multi_repo_squad"
+      | "dual_davi"
+      | "triad_delivery",
+  ) => {
+    const devApiPersona = personas.find((p) => p.id === "dev-api" || p.id === "dev") ?? personas[0];
+    const devWebPersona =
+      personas.find((p) => p.id === "dev-web" || p.id === "dev") ?? devApiPersona;
+    const designPersona = personas.find((p) => p.id === "design") ?? devWebPersona;
+    const qaPersona = personas.find((p) => p.id === "qa") ?? devWebPersona;
+    if (!devApiPersona || !devWebPersona) return;
 
     const apiRepo =
-      repoOptions.find((r) => r.id.includes("api") || r.label.toLowerCase().includes("api")) ??
-      repoOptions[0];
+      repoOptions.find(
+        (r) => r.donoDoContrato || r.id.includes("api") || r.label.toLowerCase().includes("api"),
+      ) ?? repoOptions[0];
     const webRepo =
       repoOptions.find((r) => r.id.includes("web") || r.label.toLowerCase().includes("web")) ??
       repoOptions[0];
 
-    if (presetKind === "dual_davi") {
+    if (presetKind === "mockup_turbo") {
+      setExecutionMode("simultaneous");
       setSlots([
         createSlotForPersona(
-          devPersona,
+          designPersona ?? devWebPersona,
+          0,
+          webRepo,
+          "Fechar mockup e fidelidade visual da Tela 1 em worktree isolado: respeitar travas code_truth do .t3/product-map.json, validar 360px/768px/1280px no preview_* com screenshots antes/depois e emitir [PORTAO_APROVACAO: mockup_tela].",
+          "Dora Lins (Tela 1 · Mockup UI)",
+        ),
+        createSlotForPersona(
+          devWebPersona,
+          1,
+          webRepo,
+          "Portar e refinar componentes interativos da Tela 2 em worktree isolado: respeitar travas code_truth do .t3/product-map.json, capturar prints reais via preview_* e emitir [PORTAO_APROVACAO: mockup_tela].",
+          "Davi Web (Tela 2 · Fidelidade UI)",
+        ),
+      ]);
+      return;
+    }
+
+    if (presetKind === "squad_completo_sequencial") {
+      setExecutionMode("sequential_contract");
+      const seqSlots: DispatchSlot[] = [
+        createSlotForPersona(
+          devApiPersona,
+          0,
+          apiRepo,
+          "Fase 1 (Dono do Contrato 🔒): Definir e implementar schema/endpoint retrocompatível no backend antes do Web, garantindo typecheck + lint + test verdes.",
+          "Davi API (1º Contrato 🔒)",
+        ),
+        createSlotForPersona(
+          devWebPersona,
+          1,
+          webRepo,
+          "Fase 2 (Dev Web): Consumir o contrato oficial da Fase 1 no frontend respeitando as travas code_truth do .t3/product-map.json e estados vazios/loading/erro.",
+          "Davi Web (2º Integração UI)",
+        ),
+      ];
+      if (qaPersona) {
+        seqSlots.push(
+          createSlotForPersona(
+            qaPersona,
+            2,
+            webRepo,
+            "Fase 3 (QA E2E & Prints): Validar fluxo ponta a ponta no preview_* (360/768/1280px), testar variações de estado/ataque e capturar prints finais para [PORTAO_APROVACAO: entrega_final].",
+            "Quim QA E2E (3º Variações & Prints)",
+          ),
+        );
+      }
+      setSlots(sortSlotsForSequentialMode(seqSlots));
+      return;
+    }
+
+    if (presetKind === "dual_davi") {
+      setExecutionMode("simultaneous");
+      setSlots([
+        createSlotForPersona(
+          devWebPersona,
           0,
           webRepo,
           "Abordagem A: Foco em arquitetura enxuta, reutilizando componentes existentes e máxima performance.",
           "Davi #1 (Abordagem A)",
         ),
         createSlotForPersona(
-          devPersona,
+          devWebPersona,
           1,
           webRepo,
           "Abordagem B: Foco em experiência interativa rica, micro-interações e cobertura completa de edge cases.",
@@ -287,9 +435,10 @@ export function SquadDispatcherDialog({
     }
 
     if (presetKind === "triad_delivery") {
+      setExecutionMode("simultaneous");
       const next: DispatchSlot[] = [
         createSlotForPersona(
-          devPersona,
+          devWebPersona,
           0,
           webRepo,
           "Implementar a funcionalidade completa com typecheck e testes verdes.",
@@ -324,14 +473,14 @@ export function SquadDispatcherDialog({
 
     const multiSlots: DispatchSlot[] = [
       createSlotForPersona(
-        devPersona,
+        devApiPersona,
         0,
         apiRepo,
         "Atualizar e validar contrato no backend (API First), garantindo typecheck + lint + test.",
         "Davi #1 (API · Contrato)",
       ),
       createSlotForPersona(
-        devPersona,
+        devWebPersona,
         1,
         webRepo,
         "Consumir o contrato no frontend, mantendo fidelidade ao Mapa da Fonte da Verdade.",
@@ -360,24 +509,38 @@ export function SquadDispatcherDialog({
         ),
       );
     }
-    setSlots(multiSlots);
+    setSlots(
+      executionMode === "sequential_contract" ? sortSlotsForSequentialMode(multiSlots) : multiSlots,
+    );
   };
 
   const addSlot = () => {
-    const devPersona = personas.find((p) => p.id === "dev") ?? personas[0];
+    const devPersona = personas.find((p) => p.id === "dev" || p.id === "dev-web") ?? personas[0];
     if (!devPersona) return;
-    const existingDaviCount = slots.filter((s) => s.personaId === "dev").length;
-    const nextLabel = devPersona.id === "dev" ? `Davi #${existingDaviCount + 1}` : devPersona.name;
-    setSlots((current) => [
-      ...current,
-      createSlotForPersona(devPersona, current.length, repoOptions[0], "", nextLabel),
-    ]);
+    const existingDaviCount = slots.filter(
+      (s) => s.personaId === "dev" || s.personaId === "dev-web" || s.personaId === "dev-api",
+    ).length;
+    const nextLabel = devPersona.id.startsWith("dev")
+      ? `Davi #${existingDaviCount + 1}`
+      : devPersona.name;
+    setSlots((current) => {
+      const next = [
+        ...current,
+        createSlotForPersona(devPersona, current.length, repoOptions[0], "", nextLabel),
+      ];
+      return executionMode === "sequential_contract" ? sortSlotsForSequentialMode(next) : next;
+    });
   };
 
   const updateSlot = (slotId: string, patch: Partial<DispatchSlot>) => {
-    setSlots((current) =>
-      current.map((slot) => (slot.slotId === slotId ? { ...slot, ...patch } : slot)),
-    );
+    setSlots((current) => {
+      const updated = current.map((slot) =>
+        slot.slotId === slotId ? { ...slot, ...patch } : slot,
+      );
+      return executionMode === "sequential_contract"
+        ? sortSlotsForSequentialMode(updated)
+        : updated;
+    });
   };
 
   const removeSlot = (slotId: string) => {
@@ -401,8 +564,12 @@ export function SquadDispatcherDialog({
 
     try {
       const createdAt = new Date().toISOString();
+      const orderedSlots =
+        executionMode === "sequential_contract" ? sortSlotsForSequentialMode(slots) : slots;
+      const totalSlotsCount = orderedSlots.length;
+
       await Promise.all(
-        slots.map(async (slot) => {
+        orderedSlots.map(async (slot, slotIndex) => {
           const persona = personas.find((p) => p.id === slot.personaId) ?? personas[0];
           if (!persona) return;
 
@@ -426,12 +593,18 @@ export function SquadDispatcherDialog({
               r.cwd.toLowerCase().replace(/\\/g, "/") ===
               slot.repoCwd.toLowerCase().replace(/\\/g, "/"),
           );
+          const phaseInfo = resolveSlotDependencyPhase(slot, repoOption, persona);
+          const upstreamSlots = orderedSlots.slice(0, slotIndex);
+          const dependsOnLabels =
+            upstreamSlots.length > 0
+              ? upstreamSlots.map((u) => `${u.customLabel} (${u.repoLabel})`).join(" -> ")
+              : "Nenhum (Fase 1 Inicial · Dono do Contrato)";
 
           const repoContextLines: string[] = [
             `<multi_repo_worktree_assignment>`,
             `Funcionário Escalado: **${slot.customLabel}** (${persona.role})`,
             `Repositório Alvo: **${slot.repoLabel}** (\`${slot.repoCwd}\`)`,
-            `Branch Base: \`${slot.baseBranch}\` (${slot.useWorktree ? "Worktree Git Isolado" : " Diretório Principal"})`,
+            `Branch Base: \`${slot.baseBranch}\` (${slot.useWorktree ? "Worktree Git Isolado" : "Diretório Principal"})`,
           ];
           if (repoOption?.donoDoContrato) {
             repoContextLines.push(
@@ -453,6 +626,21 @@ export function SquadDispatcherDialog({
           }
           repoContextLines.push(`</multi_repo_worktree_assignment>`);
 
+          const dependencyChainBlock =
+            executionMode === "sequential_contract"
+              ? [
+                  `<squad_dependency_chain phase="${slotIndex + 1}/${totalSlotsCount}" phaseCategory="${phaseInfo.label}" dependsOn="${dependsOnLabels}">`,
+                  `- Modo de Execução: Sequencial por Dependência (1º API Contrato 🔒 -> 2º Devs Web -> 3º QA E2E & Variações -> 4º Print Final)`,
+                  `- Sua Etapa na Cadeia: Etapa ${slotIndex + 1} de ${totalSlotsCount} (${phaseInfo.label})`,
+                  `- Dependências Anteriores: ${dependsOnLabels}`,
+                  `- Regra Fase 1 (API Contrato 🔒): Finalize e valide o contrato/schema primeiro com typecheck + lint + test antes do consumo Web.`,
+                  `- Regra Fase 2 (Design / Dev Web): Respeite as travas code_truth do .t3/product-map.json, consuma o contrato oficial da Fase 1 e valide estados vazios/loading/erro.`,
+                  `- Regra Fase 3 (QA E2E & Variações): Abra o navegador real via preview_* em 360px, 768px e 1280px, teste variações de estado/borda e comprove regressão zero.`,
+                  `- Regra Fase 4 (Print Final & Aprovação): Capture screenshots antes/depois via preview_snapshot e apresente [PORTAO_APROVACAO: entrega_final] para aprovação 100%.`,
+                  `</squad_dependency_chain>`,
+                ].join("\n")
+              : "";
+
           const combinedUserTask = [
             globalObjective.trim() ? `## Objetivo Geral da Missão\n${globalObjective.trim()}` : "",
             slot.taskBrief.trim()
@@ -467,7 +655,12 @@ export function SquadDispatcherDialog({
             combinedUserTask,
           );
           const guardrails = readProductGuardrailsForProject(targetEnvId, slot.repoCwd);
-          const fullPrompt = [guardrails, repoContextLines.join("\n"), personaPrompt]
+          const fullPrompt = [
+            guardrails,
+            repoContextLines.join("\n"),
+            dependencyChainBlock,
+            personaPrompt,
+          ]
             .filter(Boolean)
             .join("\n\n");
 
@@ -475,7 +668,10 @@ export function SquadDispatcherDialog({
           const shortObjective =
             (slot.taskBrief.trim() || globalObjective.trim()).slice(0, 48) ||
             "Execução em paralelo";
-          const threadTitle = `[${slot.customLabel} · ${slot.repoLabel.split(" ")[0]}] ${shortObjective}`;
+          const threadTitle =
+            executionMode === "sequential_contract"
+              ? `[${slotIndex + 1}/${totalSlotsCount} · ${slot.customLabel}] ${shortObjective}`
+              : `[${slot.customLabel} · ${slot.repoLabel.split(" ")[0]}] ${shortObjective}`;
 
           const result = await startThreadTurn({
             environmentId: targetEnvId,
@@ -524,7 +720,7 @@ export function SquadDispatcherDialog({
               ...persona,
               name: slot.customLabel,
             });
-            useDispatchedEmployeesStore.getState().registerDispatchedEmployee({
+            useDispatchedEmployeesStore.getState().addDispatchedEmployee({
               threadKey: scopedKey,
               environmentId: targetEnvId,
               threadId: targetThreadId,
@@ -539,6 +735,11 @@ export function SquadDispatcherDialog({
               model: slot.model,
               taskSummary: shortObjective,
               dispatchedAt: createdAt,
+              executionMode,
+              phaseLabel:
+                executionMode === "sequential_contract"
+                  ? `Fase ${slotIndex + 1}/${totalSlotsCount}: ${phaseInfo.label}`
+                  : undefined,
             });
           }
         }),
@@ -547,7 +748,9 @@ export function SquadDispatcherDialog({
       if (launchedCount > 0) {
         toastManager.add({
           type: "success",
-          title: `${launchedCount} ${launchedCount === 1 ? "funcionário escalado" : "funcionários escalados"} em paralelo!`,
+          title: `${launchedCount} ${launchedCount === 1 ? "funcionário escalado" : "funcionários escalados"} (${
+            executionMode === "sequential_contract" ? "Cadeia Sequencial" : "Paralelo Imediato"
+          })!`,
           description:
             "Cada especialista iniciou em sua própria thread/worktree com guardrails da Fonte da Verdade.",
         });
@@ -575,16 +778,25 @@ export function SquadDispatcherDialog({
               </DialogTitle>
             </div>
             <div className="flex flex-wrap items-center gap-1.5">
+              <Button variant="outline" size="xs" onClick={() => applyPreset("mockup_turbo")}>
+                <ZapIcon className="size-3.5 text-warning" />⚡ Preset: Mockup Turbo (Telas em
+                Paralelo)
+              </Button>
+              <Button
+                variant="outline"
+                size="xs"
+                onClick={() => applyPreset("squad_completo_sequencial")}
+              >
+                <RocketIcon className="size-3.5 text-primary" />🚀 Preset: Squad Completo (API -&gt;
+                Web -&gt; QA E2E)
+              </Button>
               <Button variant="outline" size="xs" onClick={() => applyPreset("multi_repo_squad")}>
                 <FolderGit2Icon className="size-3.5" />
-                Preset API + Web + UI + QA
+                API + Web + UI + QA
               </Button>
               <Button variant="outline" size="xs" onClick={() => applyPreset("dual_davi")}>
                 <BotIcon className="size-3.5" />
-                2× Davi Rocha (A vs B)
-              </Button>
-              <Button variant="outline" size="xs" onClick={() => applyPreset("triad_delivery")}>
-                Tríade Davi + Dora + Quim
+                2× Davi (A vs B)
               </Button>
               <Button variant="secondary" size="xs" onClick={addSlot}>
                 <PlusIcon className="size-3.5" />
@@ -593,14 +805,69 @@ export function SquadDispatcherDialog({
             </div>
           </div>
           <DialogDescription>
-            Escale múltiplos funcionários simultaneamente em diferentes contas/modelos e em{" "}
+            Escale múltiplos funcionários em diferentes contas/modelos e em{" "}
             <code>git worktrees</code> isolados por repositório (ex.: <code>uarapoint-api</code> +{" "}
-            <code>uarapoint-web</code>).
+            <code>uarapoint-web</code>), com persistência automática.
           </DialogDescription>
         </DialogHeader>
 
         <DialogPanel>
           <div className="flex flex-col gap-4">
+            {/* Execution Mode Selector */}
+            <div className="flex flex-col gap-1.5 rounded-xl border border-border/80 bg-muted/30 p-3 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="inline-flex items-center gap-1.5 font-semibold text-foreground">
+                  <LayersIcon className="size-3.5 text-primary" />
+                  Modo de Orquestração & Dependência entre Funcionários
+                </span>
+                <Badge
+                  variant={executionMode === "sequential_contract" ? "default" : "secondary"}
+                  size="sm"
+                >
+                  {executionMode === "sequential_contract"
+                    ? "Ordem de Contrato Ativa"
+                    : "Disparo Simultâneo"}
+                </Badge>
+              </div>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => handleSelectExecutionMode("simultaneous")}
+                  className={`flex flex-col items-start gap-0.5 rounded-lg border p-2.5 text-left transition-colors ${
+                    executionMode === "simultaneous"
+                      ? "border-primary bg-primary/10 text-foreground shadow-2xs"
+                      : "border-border/60 bg-background/70 text-muted-foreground hover:bg-accent/40 hover:text-foreground"
+                  }`}
+                >
+                  <span className="font-semibold text-xs">
+                    Simultâneo (Paralelo Imediato em Worktrees)
+                  </span>
+                  <span className="text-2xs text-muted-foreground">
+                    Ideal para Mockup Turbo (várias telas ao mesmo tempo) ou abordagens A vs B
+                    independentes.
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSelectExecutionMode("sequential_contract")}
+                  className={`flex flex-col items-start gap-0.5 rounded-lg border p-2.5 text-left transition-colors ${
+                    executionMode === "sequential_contract"
+                      ? "border-primary bg-primary/10 text-foreground shadow-2xs"
+                      : "border-border/60 bg-background/70 text-muted-foreground hover:bg-accent/40 hover:text-foreground"
+                  }`}
+                >
+                  <span className="font-semibold text-xs">
+                    Sequencial por Dependência (1º API Contrato 🔒 -&gt; 2º Devs Web -&gt; 3º QA E2E
+                    & Variações -&gt; 4º Print Final)
+                  </span>
+                  <span className="text-2xs text-muted-foreground">
+                    Ordena automaticamente as fases e injeta a cadeia &lt;squad_dependency_chain&gt;
+                    em cada worker.
+                  </span>
+                </button>
+              </div>
+            </div>
+
             <label className="flex flex-col gap-1.5 text-xs">
               <span className="font-semibold text-foreground">
                 Objetivo Geral da Missão (compartilhado com todos os funcionários escalados)
@@ -622,6 +889,12 @@ export function SquadDispatcherDialog({
                 const accountSummary = accountSummaries.find(
                   (s) => s.instanceId === slot.instanceId,
                 );
+                const repoOption = repoOptions.find(
+                  (r) =>
+                    r.cwd.toLowerCase().replace(/\\/g, "/") ===
+                    slot.repoCwd.toLowerCase().replace(/\\/g, "/"),
+                );
+                const phaseInfo = resolveSlotDependencyPhase(slot, repoOption, persona);
 
                 return (
                   <div
@@ -640,6 +913,11 @@ export function SquadDispatcherDialog({
                           <Badge variant="outline" size="sm">
                             Slot #{index + 1}
                           </Badge>
+                          {executionMode === "sequential_contract" ? (
+                            <Badge variant="default" size="sm">
+                              {phaseInfo.label}
+                            </Badge>
+                          ) : null}
                           <select
                             value={slot.personaId}
                             onChange={(e) => {

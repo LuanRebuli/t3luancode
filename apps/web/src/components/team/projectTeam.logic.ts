@@ -83,6 +83,8 @@ export interface ProjectLinkedRepo {
 
 export interface ProjectPersona {
   readonly id: string;
+  readonly handle?: string | undefined;
+  readonly specialtyId?: string | undefined;
   readonly squadRoleKey?: SquadRoleKey | undefined;
   readonly category?: PersonaCategory | undefined;
   readonly name: string;
@@ -103,6 +105,216 @@ export interface ProjectPersona {
   readonly skills: ReadonlyArray<string>;
   readonly qualityChecklist: ReadonlyArray<string>;
   readonly systemPrompt: string;
+}
+
+export type SquadWorkflowMode = "direct" | "mockup_turbo" | "full_pipeline" | "creative_studio";
+
+export type SquadPipelineStageId =
+  | "produto_spec"
+  | "design"
+  | "dev"
+  | "qa_e2e"
+  | "prints_aprovacao";
+
+export interface SquadWorkflowModeMeta {
+  readonly id: SquadWorkflowMode;
+  readonly label: string;
+  readonly shortLabel: string;
+  readonly badgeText: string;
+  readonly description: string;
+  readonly defaultLeadPersonaId: string;
+}
+
+export const SQUAD_WORKFLOW_MODES: ReadonlyArray<SquadWorkflowModeMeta> = [
+  {
+    id: "direct",
+    label: "Conversa Direta",
+    shortLabel: "Direto",
+    badgeText: "Direto",
+    description: "Conversa direta com o membro ativo sem burocracia de etapas.",
+    defaultLeadPersonaId: "principal",
+  },
+  {
+    id: "mockup_turbo",
+    label: "Fechar Mockup / Fidelidade Turbo",
+    shortLabel: "Mockup Turbo",
+    badgeText: "Mockup Turbo",
+    description:
+      "Foco 100% em UI/Mockup sem passar por 5 pessoas: solta Designers/Devs UI em worktree respeitando travas do Mapa do Produto, tira print antes/depois via preview_* e pede aprovação da tela.",
+    defaultLeadPersonaId: "design",
+  },
+  {
+    id: "full_pipeline",
+    label: "Feature Completa (Orquestrada pela Nina)",
+    shortLabel: "Feature Completa",
+    badgeText: "Ciclo Completo",
+    description:
+      "Fluxo completo com delegate_task real: 1. Produto & Spec (Portão 1) -> 2. Design (Portão 2) -> 3. Dev Multi-Repo (API antes do Web) -> 4. QA E2E Real & Variações -> 5. Prints Finais & Aprovação 100%.",
+    defaultLeadPersonaId: "principal",
+  },
+  {
+    id: "creative_studio",
+    label: "Estúdio Criativo: HTML & Posts",
+    shortLabel: "HTML & Posts",
+    badgeText: "HTML & Posts",
+    description:
+      "Cria HTML interativo (html_preview + html_render) ou gera artes .png prontas para postar (1080x1080, 1080x1350, 1080x1920) salvas no projeto com preview no chat.",
+    defaultLeadPersonaId: "conteudo",
+  },
+];
+
+export interface SquadPipelineStageMeta {
+  readonly id: SquadPipelineStageId;
+  readonly stepNumber: number;
+  readonly title: string;
+  readonly shortTitle: string;
+  readonly ownerHandles: ReadonlyArray<string>;
+  readonly requiresUserApprovalGate: boolean;
+  readonly gateLabel: string | null;
+  readonly description: string;
+}
+
+export const SQUAD_PIPELINE_STAGES: ReadonlyArray<SquadPipelineStageMeta> = [
+  {
+    id: "produto_spec",
+    stepNumber: 1,
+    title: "Produto & Spec",
+    shortTitle: "1. Produto/Spec",
+    ownerHandles: ["@produto", "@spec", "@critico", "@surf"],
+    requiresUserApprovalGate: true,
+    gateLabel: "Portão 1: Escopo & Contrato",
+    description:
+      "Otto (@produto), Iris (@spec) e especialistas definem escopo enxuto e contrato da API.",
+  },
+  {
+    id: "design",
+    stepNumber: 2,
+    title: "Design & Estados",
+    shortTitle: "2. Design",
+    ownerHandles: ["@design"],
+    requiresUserApprovalGate: true,
+    gateLabel: "Portão 2: Visual & Telas",
+    description: "Dora (@design) cria/ajusta estados visuais, responsivo e fidelidade.",
+  },
+  {
+    id: "dev",
+    stepNumber: 3,
+    title: "Dev Multi-Repo",
+    shortTitle: "3. Dev Multi-Repo",
+    ownerHandles: ["@dev-api", "@dev-web", "@dev-pedidos", "@dev"],
+    requiresUserApprovalGate: false,
+    gateLabel: null,
+    description:
+      "Davi API fecha o contrato primeiro; depois múltiplos Davi Web rodam em worktrees paralelos.",
+  },
+  {
+    id: "qa_e2e",
+    stepNumber: 4,
+    title: "QA E2E & Variações",
+    shortTitle: "4. QA E2E",
+    ownerHandles: ["@qa", "@revisor"],
+    requiresUserApprovalGate: false,
+    gateLabel: null,
+    description:
+      "Quim (@qa) e Rui (@revisor) rodam typecheck/testes + E2E real no navegador (preview_*) com variações (vazio, erro, mobile, desktop) e checagem de travas do Mapa do Produto. Se quebrar, devolve pro Dev automaticamente.",
+  },
+  {
+    id: "prints_aprovacao",
+    stepNumber: 5,
+    title: "Prints & Aprovação 100%",
+    shortTitle: "5. Prints & 100%",
+    ownerHandles: ["@entrega", "@lider"],
+    requiresUserApprovalGate: true,
+    gateLabel: "Portão Final: Aprovação 100%",
+    description:
+      "Lia (@entrega) tira prints reais desktop + mobile da feature pronta e apresenta no chat para aprovação final.",
+  },
+];
+
+export function resolveProviderBrandColor(
+  driverKind: string | null | undefined,
+  customAccentColor?: string | null,
+): string {
+  const trimmedCustom = customAccentColor?.trim() ?? "";
+  if (
+    trimmedCustom.startsWith("#") &&
+    trimmedCustom.length >= 4 &&
+    trimmedCustom.toLowerCase() !== "#6366f1"
+  ) {
+    return trimmedCustom;
+  }
+  const normalizedDriver = (driverKind ?? "").toLowerCase();
+  if (normalizedDriver.includes("claude")) {
+    return "#D97757";
+  }
+  if (normalizedDriver.includes("codex") || normalizedDriver.includes("openai")) {
+    return "#10A37F";
+  }
+  if (normalizedDriver.includes("antigravity") || normalizedDriver.includes("gemini")) {
+    return "#4E86F6";
+  }
+  return "#6366f1";
+}
+
+export function resolveProviderBrandLabel(driverKind: string | null | undefined): string {
+  const normalizedDriver = (driverKind ?? "").trim().toLowerCase();
+  if (normalizedDriver.includes("claude")) {
+    return "Claude";
+  }
+  if (normalizedDriver.includes("codex") || normalizedDriver.includes("openai")) {
+    return "Codex";
+  }
+  if (normalizedDriver.includes("antigravity") || normalizedDriver.includes("gemini")) {
+    return "Gemini";
+  }
+  return driverKind?.trim() || "IA";
+}
+
+const PERSONA_SHORT_ROLE_MAP: Readonly<Record<string, string>> = {
+  principal: "Líder",
+  lider: "Líder",
+  produto: "Produto & CRO",
+  conversao: "Produto & CRO",
+  crescimento: "Produto & CRO",
+  spec: "Spec & Arq",
+  arquiteto: "Spec & Arq",
+  critico: "Crítico",
+  design: "Design",
+  "dev-api": "Dev API",
+  "dev-web": "Dev Web",
+  "dev-pedidos": "Dev Pedidos",
+  dev: "Dev",
+  qa: "QA E2E",
+  revisao: "Revisão",
+  revisor: "Revisão",
+  entrega: "Entrega & Prints",
+  evidencia: "Entrega & Prints",
+  surf: "Surf & Meteo",
+  conteudo: "Instagram & Copy",
+};
+
+export function resolvePersonaShortRole(
+  persona: Pick<ProjectPersona, "id" | "role" | "handle" | "specialtyId"> & {
+    readonly name?: string | undefined;
+  },
+): string {
+  const rawHandle = persona.handle?.trim().replace(/^@/, "").toLowerCase() ?? "";
+  const rawId = persona.id?.trim().replace(/^@/, "").toLowerCase() ?? "";
+  const rawSpecialty = persona.specialtyId?.trim().replace(/^@/, "").toLowerCase() ?? "";
+  const inlineHandleMatch = persona.name?.match(/@([a-z0-9_-]+)/i);
+  const inlineHandle = inlineHandleMatch?.[1]?.toLowerCase() ?? "";
+
+  for (const key of [rawId, rawHandle, rawSpecialty, inlineHandle]) {
+    if (key && PERSONA_SHORT_ROLE_MAP[key]) {
+      return PERSONA_SHORT_ROLE_MAP[key]!;
+    }
+  }
+
+  const firstSegment = (persona.role ?? "").split(/[(&]/)[0]?.trim() ?? "";
+  if (!firstSegment) {
+    return "Coworker";
+  }
+  return firstSegment.length > 16 ? firstSegment.slice(0, 16).trim() : firstSegment;
 }
 
 export interface ProjectTeamConfig {
@@ -436,7 +648,7 @@ export function summarizeAccountLiveStatus(input: {
     instanceId: entry.instanceId,
     displayName: entry.displayName,
     driverKind: entry.driverKind,
-    accentColor: entry.accentColor,
+    accentColor: resolveProviderBrandColor(entry.driverKind, entry.accentColor),
     isAvailable: entry.isAvailable,
     activeAgentCount,
     lowestRemainingPercent,
@@ -591,7 +803,7 @@ export function parseProjectTeamConfig(rawContents: string | undefined | null): 
               instanceId: ProviderInstanceId.make(
                 typeof candidate.instanceId === "string" && candidate.instanceId
                   ? candidate.instanceId
-                  : "default:codex",
+                  : "default-codex",
               ),
               model: typeof candidate.model === "string" ? candidate.model : "",
               effort: typeof candidate.effort === "string" ? candidate.effort : null,
@@ -733,6 +945,144 @@ export function formatPersonaDirectModePrompt(
   ].join("\n");
 }
 
+function resolvePersonaHandleString(persona: ProjectPersona): string {
+  if (persona.handle && persona.handle.trim().length > 0) {
+    const clean = persona.handle.trim();
+    return clean.startsWith("@") ? clean : `@${clean}`;
+  }
+  const match = persona.name.match(/@([a-z0-9_-]+)/i);
+  if (match?.[1]) {
+    return `@${match[1]}`;
+  }
+  return `@${persona.id}`;
+}
+
+function escapeXmlAttr(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+export function formatSquadWorkflowPrompt(input: {
+  readonly mode: SquadWorkflowMode;
+  readonly activePersona: ProjectPersona | null;
+  readonly teamConfig: ProjectTeamConfig;
+  readonly userMessageText: string;
+  readonly currentStage?: SquadPipelineStageId | null | undefined;
+}): string {
+  const { mode, activePersona, teamConfig, userMessageText, currentStage } = input;
+  const modeMeta =
+    SQUAD_WORKFLOW_MODES.find((item) => item.id === mode) ?? SQUAD_WORKFLOW_MODES[0]!;
+  const effectiveStage: SquadPipelineStageId | null =
+    mode === "full_pipeline" ? (currentStage ?? "produto_spec") : (currentStage ?? null);
+
+  const defaultPersona =
+    teamConfig.personas.find(
+      (item) =>
+        item.id === modeMeta.defaultLeadPersonaId ||
+        resolvePersonaHandleString(item) === `@${modeMeta.defaultLeadPersonaId}`,
+    ) ??
+    teamConfig.personas[0] ??
+    null;
+
+  const leadPersona = activePersona ?? defaultPersona;
+  const personaId = leadPersona?.id ?? modeMeta.defaultLeadPersonaId;
+  const personaName = leadPersona?.name ?? "Nina Prado (@lider)";
+  const personaRole = leadPersona
+    ? resolvePersonaShortRole(leadPersona)
+    : mode === "mockup_turbo"
+      ? "Design"
+      : mode === "creative_studio"
+        ? "Instagram & Copy"
+        : "Líder";
+  const personaHandle = leadPersona ? resolvePersonaHandleString(leadPersona) : "@lider";
+  const personaIcon = leadPersona?.icon ?? "👑";
+  const personaColor = leadPersona?.color ?? "#6366f1";
+
+  const linkedRepos = teamConfig.linkedRepos ?? [];
+  const contractOwnerRepo = linkedRepos.find((repo) => repo.donoDoContrato);
+
+  const rosterLines =
+    teamConfig.personas.length > 0
+      ? teamConfig.personas
+          .map((member) => {
+            const handle = resolvePersonaHandleString(member);
+            const shortRole = resolvePersonaShortRole(member);
+            const isContractOwner =
+              member.id.includes("api") ||
+              member.id === "spec" ||
+              Boolean(contractOwnerRepo && member.role.toLowerCase().includes("api"));
+            return `  - ${member.icon} ${member.name} (${shortRole} · ${handle}) | providerInstanceId="${member.instanceId}" | model="${member.model}" | donoDoContrato=${isContractOwner ? "true" : "false"} | vereditos: roda="${member.roda ?? ""}", aprova="${member.aprova ?? "Aprovado."}", reprova="${member.reprova ?? "Volta."}" | diretriz: ${member.systemPrompt}`;
+          })
+          .join("\n")
+      : "  - Equipe padrão ativa no workspace.";
+
+  const reposLines =
+    linkedRepos.length > 0
+      ? linkedRepos
+          .map(
+            (repo) =>
+              `  - ${repo.label} (${repo.cwd}) | branch="${repo.baseBranch}" | donoDoContrato=${repo.donoDoContrato ? "true" : "false"}`,
+          )
+          .join("\n")
+      : "";
+
+  const modeInstructions: string[] = [];
+
+  if (mode === "mockup_turbo") {
+    modeInstructions.push(
+      "MODO ATIVO: Modo Fechar Mockup / Fidelidade Turbo (Zero burocracia de 5 pessoas).",
+      "- Foco 100% em fechar UI/Mockup e fidelidade visual com agilidade.",
+      '- Se múltiplas telas ou seções forem pedidas, você pode delegar workers de UI em paralelo via `delegate_task` com `isolation: "worktree"` usando as contas configuradas (`providerInstanceId` + `model`).',
+      "- Respeite rigorosamente todos os itens travados (`code_truth`) de `.t3/product-map.json`.",
+      "- Assim que uma tela estiver pronta, use `preview_status` / `preview_open` / `preview_snapshot` (ou `html_render`) para capturar evidência visual real, incorpore o print em Markdown e finalize a mensagem com `[PORTAO_APROVACAO: mockup_tela]` para exibir os botões de aprovação de tela no chat.",
+    );
+  } else if (mode === "full_pipeline") {
+    const stageMeta =
+      SQUAD_PIPELINE_STAGES.find((s) => s.id === effectiveStage) ?? SQUAD_PIPELINE_STAGES[0]!;
+    modeInstructions.push(
+      `MODO ATIVO: Feature Completa Orquestrada pela Nina Prado (@lider) · Etapa Atual: ${stageMeta.stepNumber}. ${stageMeta.title} (${stageMeta.id}).`,
+      "- Antes do primeiro `delegate_task`, chame `orchestrator_capabilities` uma única vez na thread.",
+      '- Use `delegate_task` passando `target: { providerInstanceId, model, options }` da configuração de cada especialista em `.t3/team.json` e `isolation: "worktree"` para tarefas de implementação e QA.',
+      "- Etapas e Portões Obrigatórios:",
+      "  1. Etapa 1 (`produto_spec`): Otto (@produto) e Iris (@spec) definem escopo enxuto e contrato da API -> finalize com `[PORTAO_APROVACAO: escopo_contrato]`.",
+      "  2. Etapa 2 (`design`): Dora (@design) fecha os estados visuais e responsividade -> finalize com `[PORTAO_APROVACAO: design_visual]`.",
+      "  3. Etapa 3 (`dev`): Repositório `donoDoContrato: true` (API) primeiro; depois múltiplos workers Web em worktrees paralelos.",
+      "  4. Etapa 4 (`qa_e2e`): Quim (@qa) e Rui (@revisor) rodam `typecheck`/`lint`/`test` E teste E2E real no navegador via `preview_*` testando fluxo principal + variações (vazio, erro, mobile, desktop) + checagem de regressão do `.t3/product-map.json`. Se achar qualquer bug, corrija ou redelegue ao Dev antes de acionar o usuário.",
+      "  5. Etapa 5 (`prints_aprovacao`): Lia (@entrega) captura prints desktop + mobile da feature pronta, incorpora em Markdown e finaliza com `[PORTAO_APROVACAO: aprovacao_final_100]`.",
+    );
+  } else if (mode === "creative_studio") {
+    modeInstructions.push(
+      "MODO ATIVO: Modo Estúdio Criativo (HTML Interativo & Imagens para Postar).",
+      "- Para mockups ou comparativos HTML interativos: use `html_preview` e `html_render` para renderizar comparativos visuais direto no workspace.",
+      "- Para posts de redes sociais / Instagram / marketing: gere HTML/canvas de alta resolução ou use geração de imagem + `html_render` nas dimensões exatas (`1080x1080` Feed, `1080x1350` Retrato/Carrossel, `1080x1920` Story), salve os arquivos `.png` dentro do projeto, incorpore no chat com Markdown `![titulo](/caminho/absoluto.png)` e link clicável do arquivo, e finalize com `[PORTAO_APROVACAO: arte_criativa]`.",
+    );
+  } else if (leadPersona) {
+    modeInstructions.push(
+      `MODO ATIVO: Conversa Direta com ${leadPersona.icon} ${leadPersona.name} (${leadPersona.role}).`,
+      `- Diretriz Principal: ${leadPersona.systemPrompt}`,
+      ...(leadPersona.jeito ? [`- Guia de Voz (Jeito): ${leadPersona.jeito}`] : []),
+      `- Vereditos Oficiais: Ao rodar="${leadPersona.roda ?? ""}" | Aprova="${leadPersona.aprova ?? "Aprovado."}" | Reprova="${leadPersona.reprova ?? "Volta."}"`,
+    );
+  }
+
+  const contextTag = [
+    `<squad_workflow_context mode="${escapeXmlAttr(mode)}" personaId="${escapeXmlAttr(personaId)}" personaName="${escapeXmlAttr(personaName)}" personaRole="${escapeXmlAttr(personaRole)}" personaHandle="${escapeXmlAttr(personaHandle)}" personaIcon="${escapeXmlAttr(personaIcon)}" personaColor="${escapeXmlAttr(personaColor)}" stage="${escapeXmlAttr(effectiveStage ?? "")}">`,
+    `REGRA DE ASSINATURA VISUAL OBRIGATÓRIA: Sempre inicie sua resposta visível com a linha exata:`,
+    `[COWORKER: ${personaName} | ${personaRole} | ${personaHandle}]`,
+    ...(modeInstructions.length > 0 ? ["", ...modeInstructions] : []),
+    "",
+    "SQUAD CONFIGURADO NESTE PROJETO (.t3/team.json):",
+    rosterLines,
+    ...(reposLines ? ["", "REPOSITÓRIOS VINCULADOS:", reposLines] : []),
+    `</squad_workflow_context>`,
+  ].join("\n");
+
+  return `${contextTag}\n\n${userMessageText}`;
+}
+
 function createProviderBrainPicker(providerEntries: ReadonlyArray<ProviderInstanceEntry>) {
   const availableEntries = providerEntries.filter((entry) => entry.isAvailable);
   const pool = availableEntries.length > 0 ? availableEntries : providerEntries;
@@ -757,7 +1107,7 @@ function createProviderBrainPicker(providerEntries: ReadonlyArray<ProviderInstan
     }
     const fallbackEntry = pool[accountIndexOffset % Math.max(1, pool.length)];
     return {
-      instanceId: fallbackEntry?.instanceId ?? ProviderInstanceId.make("default:codex"),
+      instanceId: fallbackEntry?.instanceId ?? ProviderInstanceId.make("default-codex"),
       model: fallbackEntry?.models[0]?.slug ?? "gpt-5-codex",
     };
   };
@@ -1107,3 +1457,24 @@ export function suggestProjectTeam(input: {
     personas,
   };
 }
+
+export const OFFICIAL_SQUAD_PERSONAS: ReadonlyArray<ProjectPersona> = (() => {
+  const base = buildOfficialSquadPersonas({
+    projectName: "Projeto",
+    filePaths: [],
+    providerEntries: [],
+  });
+  const byId = new Map<string, ProjectPersona>();
+  for (const persona of base) {
+    byId.set(persona.id, persona);
+  }
+  const pickBrain = createProviderBrainPicker([]);
+  for (const preset of OFFICIAL_WORKSPACE_PRESETS) {
+    for (const persona of materializePresetPersonas({ preset, pickBrain })) {
+      if (!byId.has(persona.id)) {
+        byId.set(persona.id, persona);
+      }
+    }
+  }
+  return Array.from(byId.values());
+})();

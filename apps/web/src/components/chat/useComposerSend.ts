@@ -1,15 +1,21 @@
 import { isClearComposerCommand, parseSideChatCommand } from "@t3tools/shared/composerTrigger";
 import { armFreshSession, disarmFreshSession, readFreshSessionArm } from "./freshSessionArms";
 import {
-  formatPersonaDirectModePrompt,
+  formatSquadWorkflowPrompt,
+  parseProjectTeamConfig,
   resolveFallbackAccountSelection,
   summarizeAccountLiveStatus,
+  T3_TEAM_FILE_PATH,
 } from "../team/projectTeam.logic";
 import {
+  computeActiveAgentsByProviderInstanceId,
   readActivePersonaForThread,
+  readPipelineStageForThread,
   readProductGuardrailsForProject,
+  readWorkflowModeForThread,
   useActivePersonaStore,
 } from "../team/useProjectTeam";
+import { getProjectFileContents } from "../files/projectFilesQueryState";
 import {
   mergeDirectPreviewAnnotation,
   resolveBackgroundDraftWorkspaceOptions,
@@ -102,7 +108,7 @@ import {
   responseContextReference,
 } from "../../lib/composerContextRecords";
 import { environmentServerConfigsAtom } from "../../state/server";
-import { threadEnvironment } from "../../state/threads";
+import { environmentThreadShells, threadEnvironment } from "../../state/threads";
 import { runMobileComposerTransition } from "./draftHeroTransition";
 import { useClientSettingsHydrated } from "../../hooks/useSettings";
 import { useStableCallback } from "../../hooks/useStableCallback";
@@ -859,11 +865,29 @@ export function useComposerSend(input: ComposerSendInput) {
     );
     const messageIdForSend = newMessageId();
     const messageCreatedAt = new Date().toISOString();
-    const activeDirectPersona = readActivePersonaForThread(routeThreadKey);
+    const rawTeamContents = getProjectFileContents(
+      activeProject.environmentId,
+      activeProject.workspaceRoot,
+      T3_TEAM_FILE_PATH,
+    );
+    const currentTeamConfig = parseProjectTeamConfig(rawTeamContents);
+    const activeDirectPersona = readActivePersonaForThread(
+      routeThreadKey,
+      currentTeamConfig.personas,
+    );
+    const currentWorkflowMode = readWorkflowModeForThread(routeThreadKey);
+    const currentPipelineStage = readPipelineStageForThread(routeThreadKey);
     const baseTextForSend = messageTextForSend || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT;
-    const personaEnrichedText = activeDirectPersona
-      ? formatPersonaDirectModePrompt(activeDirectPersona, baseTextForSend)
-      : baseTextForSend;
+    const personaEnrichedText =
+      currentWorkflowMode !== "direct" || activeDirectPersona
+        ? formatSquadWorkflowPrompt({
+            mode: currentWorkflowMode,
+            activePersona: activeDirectPersona,
+            teamConfig: currentTeamConfig,
+            userMessageText: baseTextForSend,
+            currentStage: currentPipelineStage,
+          })
+        : baseTextForSend;
     const productGuardrails = readProductGuardrailsForProject(
       activeProject.environmentId,
       activeProject.workspaceRoot,
@@ -1259,12 +1283,14 @@ export function useComposerSend(input: ComposerSendInput) {
       attachments: composerAttachmentsSnapshot,
       fallbackLabels: sendTitleFallbackLabels(sendSnapshot),
     });
+    const liveThreadShells = appAtomRegistry.get(environmentThreadShells.quietThreadShellsAtom);
+    const activeCountByInstance = computeActiveAgentsByProviderInstanceId(liveThreadShells);
     const fallbackResolution = resolveFallbackAccountSelection({
       currentSelection: ctxSelectedModelSelection,
       summaries: providerInstanceEntries.map((entry) =>
         summarizeAccountLiveStatus({
           entry,
-          activeAgentCount: 0,
+          activeAgentCount: activeCountByInstance.get(entry.instanceId) ?? 0,
           now: Date.now(),
         }),
       ),

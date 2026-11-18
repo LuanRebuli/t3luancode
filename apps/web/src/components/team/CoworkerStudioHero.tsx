@@ -1,10 +1,17 @@
-import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   type EnvironmentProject,
   threadRuntimeIsActive,
 } from "@t3tools/client-runtime/state/shell";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { ShieldCheckIcon, WrenchIcon } from "lucide-react";
+import {
+  LayoutDashboardIcon,
+  PaletteIcon,
+  RocketIcon,
+  ShieldCheckIcon,
+  WrenchIcon,
+  ZapIcon,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import type { DraftId } from "~/composerDraftStore";
 import { useComposerDraftStore } from "~/composerDraftStore";
@@ -16,8 +23,11 @@ import { CoworkerAvatar, CoworkerAvatarStack } from "./CoworkerAvatar";
 import {
   buildEffortOptionSelections,
   type ProjectPersona,
+  resolvePersonaShortRole,
+  type SquadWorkflowMode,
   suggestProjectTeam,
 } from "./projectTeam.logic";
+import { extractPersonaFirstName } from "./SquadDashboardDialog";
 import { useActivePersonaStore, useProjectTeam } from "./useProjectTeam";
 
 interface CoworkerStudioHeroProps {
@@ -29,6 +39,28 @@ interface CoworkerStudioHeroProps {
   readonly headingNode?: ReactNode;
   readonly secondaryAction?: ReactNode;
 }
+
+const HERO_WORKFLOW_RECIPES: ReadonlyArray<{
+  readonly mode: Exclude<SquadWorkflowMode, "direct">;
+  readonly label: string;
+  readonly subtitle: string;
+}> = [
+  {
+    mode: "mockup_turbo",
+    label: "⚡ Mockup Turbo",
+    subtitle: "Telas em paralelo + travas 🔒",
+  },
+  {
+    mode: "full_pipeline",
+    label: "🚀 Feature Completa",
+    subtitle: "Nina + 5 etapas + QA E2E",
+  },
+  {
+    mode: "creative_studio",
+    label: "🎨 HTML & Posts",
+    subtitle: "HTML interativo + PNG social",
+  },
+];
 
 export function CoworkerStudioHero({
   draftId = null,
@@ -43,6 +75,7 @@ export function CoworkerStudioHero({
   const providersByEnvironment = useEnvironmentProviders();
   const threadShells = useQuietThreadShells();
   const setActivePersona = useActivePersonaStore((s) => s.setActivePersona);
+  const setWorkflowMode = useActivePersonaStore((s) => s.setWorkflowMode);
   const setActiveStudioDialog = useActivePersonaStore((s) => s.setActiveStudioDialog);
   const setComposerDraftModelSelection = useComposerDraftStore((store) => store.setModelSelection);
   const setStickyComposerModelSelection = useComposerDraftStore(
@@ -75,6 +108,12 @@ export function CoworkerStudioHero({
     routeThreadKey
       ? (s.activePersonaByThreadKey[routeThreadKey] ?? null)
       : (Object.values(s.activePersonaByThreadKey).find(Boolean) ?? null),
+  );
+
+  const activeRecipeForThread = useActivePersonaStore((s) =>
+    routeThreadKey
+      ? (s.workflowModeByThreadKey[routeThreadKey] ?? "direct")
+      : (Object.values(s.workflowModeByThreadKey).find(Boolean) ?? "direct"),
   );
 
   const { teamConfig, productMapConfig } = useProjectTeam({
@@ -153,6 +192,55 @@ export function CoworkerStudioHero({
     });
   };
 
+  const handleSelectHeroWorkflowRecipe = (targetMode: Exclude<SquadWorkflowMode, "direct">) => {
+    const nextMode: SquadWorkflowMode =
+      activeRecipeForThread === targetMode ? "direct" : targetMode;
+
+    if (routeThreadKey) {
+      setWorkflowMode(routeThreadKey, nextMode);
+    }
+
+    if (nextMode !== "direct" && !activePersona) {
+      let autoLead: ProjectPersona | undefined;
+      if (nextMode === "full_pipeline") {
+        autoLead =
+          effectivePersonas.find(
+            (p) => p.id === "principal" || p.id === "lider" || p.squadRoleKey === "principal",
+          ) ?? chiefPersona;
+      } else if (nextMode === "mockup_turbo") {
+        autoLead =
+          effectivePersonas.find((p) => p.id === "design" || p.squadRoleKey === "design") ??
+          featuredSpecialist;
+      } else if (nextMode === "creative_studio") {
+        autoLead =
+          effectivePersonas.find(
+            (p) =>
+              p.id.includes("conteudo") ||
+              p.id.includes("insta") ||
+              p.id === "design" ||
+              p.squadRoleKey === "design",
+          ) ?? featuredSpecialist;
+      }
+      if (autoLead) {
+        handleSelectPersona(autoLead);
+      }
+    }
+
+    const foundRecipe = HERO_WORKFLOW_RECIPES.find((r) => r.mode === targetMode);
+    toastManager.add({
+      type: nextMode === "direct" ? "info" : "success",
+      title:
+        nextMode === "direct"
+          ? "Modo Direto Padrão ativado"
+          : `Receita Ativa: ${foundRecipe?.label ?? targetMode}`,
+      description:
+        nextMode === "direct"
+          ? "Converse direto com qualquer membro da equipe."
+          : (foundRecipe?.subtitle ?? "Fluxo especializado ativado nesta conversa."),
+      timeout: 3_000,
+    });
+  };
+
   return (
     <div
       data-coworker-studio-hero="true"
@@ -187,7 +275,7 @@ export function CoworkerStudioHero({
       {/* Main Heading with Project Selector */}
       {headingNode}
 
-      {/* Rerun-style Stacked Mini Cubes + Live Status Line */}
+      {/* Rerun-style Stacked Mini Cubes + Live Status Line + Sala do Squad Trigger */}
       <div className="mt-2.5 flex flex-wrap items-center justify-center gap-2 text-muted-foreground text-xs">
         <CoworkerAvatarStack
           items={effectivePersonas.slice(0, 6).map((p) => ({ id: p.id, color: p.color }))}
@@ -198,6 +286,15 @@ export function CoworkerStudioHero({
         <span className="font-medium text-success">
           {runningCount > 0 ? `${runningCount} em trabalho` : "prontos para escalar"}
         </span>
+        <span>·</span>
+        <button
+          type="button"
+          onClick={() => setActiveStudioDialog("dashboard")}
+          className="pointer-events-auto inline-flex cursor-pointer items-center gap-1 rounded-md border border-primary/40 bg-primary/10 px-2 py-0.5 font-semibold text-2xs text-primary transition-colors hover:bg-primary/20"
+        >
+          <LayoutDashboardIcon className="size-3" />
+          <span>Sala do Squad</span>
+        </button>
         {codeTruthCount > 0 ? (
           <>
             <span>·</span>
@@ -213,10 +310,43 @@ export function CoworkerStudioHero({
         ) : null}
       </div>
 
-      {/* Quick Coworker Direct Selector Pills */}
+      {/* Quick Row of 3 One-Click Workflow Recipe Cards */}
+      <div className="pointer-events-auto mt-3 grid w-full max-w-xl grid-cols-1 gap-2 sm:grid-cols-3">
+        {HERO_WORKFLOW_RECIPES.map((recipe) => {
+          const isActive = activeRecipeForThread === recipe.mode;
+          return (
+            <button
+              key={recipe.mode}
+              type="button"
+              onClick={() => handleSelectHeroWorkflowRecipe(recipe.mode)}
+              className={`flex cursor-pointer flex-col items-start gap-0.5 rounded-xl border px-3 py-2 text-left transition-all ${
+                isActive
+                  ? "border-primary bg-primary/15 text-foreground shadow-xs"
+                  : "border-border/60 bg-card/50 text-foreground/90 hover:border-border hover:bg-card/85"
+              }`}
+            >
+              <div className="flex w-full items-center justify-between gap-1">
+                <span className="font-semibold text-2xs text-foreground">{recipe.label}</span>
+                {recipe.mode === "mockup_turbo" ? (
+                  <ZapIcon className="size-3 text-warning" />
+                ) : recipe.mode === "full_pipeline" ? (
+                  <RocketIcon className="size-3 text-primary" />
+                ) : (
+                  <PaletteIcon className="size-3 text-info" />
+                )}
+              </div>
+              <span className="text-3xs text-muted-foreground">{recipe.subtitle}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Quick Coworker Direct Selector Pills (First Name · Short Role) */}
       <div className="pointer-events-auto mt-3 flex max-w-xl flex-wrap items-center justify-center gap-1.5">
         {effectivePersonas.slice(0, 9).map((persona) => {
           const isSelected = activePersona?.id === persona.id;
+          const firstName = extractPersonaFirstName(persona);
+          const shortRole = resolvePersonaShortRole(persona);
           return (
             <button
               key={persona.id}
@@ -233,7 +363,9 @@ export function CoworkerStudioHero({
                 colorHex={persona.color}
                 size="xs"
               />
-              <span>{persona.name.split(" ")[0]}</span>
+              <span>
+                {firstName} · {shortRole}
+              </span>
             </button>
           );
         })}
@@ -289,7 +421,7 @@ export function CoworkerStudioHero({
           </div>
         </button>
 
-        {/* Card 3: Criar novo coworker / Configurar Equipe & Mapa */}
+        {/* Card 3: Criar novo coworker / Sala do Squad & Mapa */}
         <div className="flex w-full items-center gap-2">
           <button
             type="button"
@@ -307,6 +439,16 @@ export function CoworkerStudioHero({
                 Para uma tarefa ou especialidade que ninguém faz ainda (.t3/team.json)
               </div>
             </div>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveStudioDialog("dashboard")}
+            aria-label="Abrir Sala do Squad"
+            className="flex h-full cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border border-border/60 bg-card/50 px-3 py-2.5 text-muted-foreground backdrop-blur-md transition-all hover:border-primary/50 hover:bg-card/85 hover:text-primary"
+          >
+            <LayoutDashboardIcon className="size-4 text-primary" />
+            <span className="font-medium text-3xs">Sala</span>
           </button>
 
           <button

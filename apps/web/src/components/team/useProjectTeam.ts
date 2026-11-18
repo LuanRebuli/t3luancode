@@ -1,5 +1,5 @@
 import { threadRuntimeIsActive } from "@t3tools/client-runtime/state/shell";
-import type { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
+import type { EnvironmentId } from "@t3tools/contracts";
 import { create } from "zustand";
 import { useNowMinute } from "../../hooks/useNowMinute";
 import type { ProviderInstanceEntry } from "../../providerInstances";
@@ -25,43 +25,262 @@ import {
 import {
   type AccountLiveSummary,
   buildPersonaSkillMarkdown,
+  OFFICIAL_SQUAD_PERSONAS,
   parseProjectTeamConfig,
   type ProjectPersona,
   type ProjectTeamConfig,
+  resolveProviderBrandColor,
   serializeProjectTeamConfig,
+  type SquadPipelineStageId,
+  type SquadWorkflowMode,
   suggestProjectTeam,
   summarizeAccountLiveStatus,
   T3_TEAM_FILE_PATH,
 } from "./projectTeam.logic";
 
-export type StudioModalKind = "team" | "dispatcher" | "product-map" | null;
+export const ACTIVE_PERSONA_STORAGE_KEY = "t3_squad_active_persona_store_v2";
+
+export type StudioModalKind =
+  | "team"
+  | "dispatcher"
+  | "product-map"
+  | "dashboard"
+  | "squad-dashboard"
+  | null;
+
+export type StoredActivePersona = ProjectPersona & string;
+
+function resolvePersonaValue(
+  personaOrId: ProjectPersona | string | null | undefined,
+  pool: ReadonlyArray<ProjectPersona> = OFFICIAL_SQUAD_PERSONAS,
+): StoredActivePersona | null {
+  if (!personaOrId) return null;
+  if (typeof personaOrId === "object" && typeof personaOrId.id === "string") {
+    return personaOrId as StoredActivePersona;
+  }
+  if (typeof personaOrId === "string") {
+    const trimmed = personaOrId.trim();
+    if (!trimmed) return null;
+    const normalized = trimmed.replace(/^@/, "").toLowerCase();
+    const matched =
+      pool.find(
+        (item) =>
+          item.id.toLowerCase() === normalized ||
+          item.handle?.replace(/^@/, "").toLowerCase() === normalized ||
+          item.name.toLowerCase().includes(`@${normalized}`),
+      ) ??
+      OFFICIAL_SQUAD_PERSONAS.find(
+        (item) =>
+          item.id.toLowerCase() === normalized ||
+          item.handle?.replace(/^@/, "").toLowerCase() === normalized ||
+          item.name.toLowerCase().includes(`@${normalized}`),
+      ) ??
+      OFFICIAL_SQUAD_PERSONAS[0] ??
+      null;
+    if (!matched) return null;
+    return {
+      ...matched,
+      id: matched.id || trimmed,
+    } as StoredActivePersona;
+  }
+  return null;
+}
+
+interface PersistedActivePersonaStoreV2 {
+  readonly activePersonaByThreadKey?: Record<string, ProjectPersona | string | null>;
+  readonly workflowModeByThreadKey?: Record<string, SquadWorkflowMode>;
+  readonly pipelineStageByThreadKey?: Record<string, SquadPipelineStageId>;
+  readonly autoFallbackEnabled?: boolean;
+}
+
+function loadPersistedActivePersonaState(): {
+  readonly activePersonaByThreadKey: Record<string, StoredActivePersona | null>;
+  readonly workflowModeByThreadKey: Record<string, SquadWorkflowMode>;
+  readonly pipelineStageByThreadKey: Record<string, SquadPipelineStageId>;
+  readonly autoFallbackEnabled: boolean;
+} {
+  const fallback = {
+    activePersonaByThreadKey: {} as Record<string, StoredActivePersona | null>,
+    workflowModeByThreadKey: {} as Record<string, SquadWorkflowMode>,
+    pipelineStageByThreadKey: {} as Record<string, SquadPipelineStageId>,
+    autoFallbackEnabled: true,
+  };
+  if (typeof window === "undefined") {
+    return fallback;
+  }
+  try {
+    const raw = window.localStorage.getItem(ACTIVE_PERSONA_STORAGE_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as PersistedActivePersonaStoreV2 | null;
+    if (!parsed || typeof parsed !== "object") return fallback;
+
+    const activePersonaByThreadKey: Record<string, StoredActivePersona | null> = {};
+    if (parsed.activePersonaByThreadKey && typeof parsed.activePersonaByThreadKey === "object") {
+      for (const [key, value] of Object.entries(parsed.activePersonaByThreadKey)) {
+        activePersonaByThreadKey[key] = resolvePersonaValue(value);
+      }
+    }
+
+    const workflowModeByThreadKey: Record<string, SquadWorkflowMode> = {};
+    if (parsed.workflowModeByThreadKey && typeof parsed.workflowModeByThreadKey === "object") {
+      for (const [key, value] of Object.entries(parsed.workflowModeByThreadKey)) {
+        if (
+          value === "direct" ||
+          value === "mockup_turbo" ||
+          value === "full_pipeline" ||
+          value === "creative_studio"
+        ) {
+          workflowModeByThreadKey[key] = value;
+        }
+      }
+    }
+
+    const pipelineStageByThreadKey: Record<string, SquadPipelineStageId> = {};
+    if (parsed.pipelineStageByThreadKey && typeof parsed.pipelineStageByThreadKey === "object") {
+      for (const [key, value] of Object.entries(parsed.pipelineStageByThreadKey)) {
+        if (
+          value === "produto_spec" ||
+          value === "design" ||
+          value === "dev" ||
+          value === "qa_e2e" ||
+          value === "prints_aprovacao"
+        ) {
+          pipelineStageByThreadKey[key] = value;
+        }
+      }
+    }
+
+    return {
+      activePersonaByThreadKey,
+      workflowModeByThreadKey,
+      pipelineStageByThreadKey,
+      autoFallbackEnabled: parsed.autoFallbackEnabled !== false,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function savePersistedActivePersonaState(state: {
+  readonly activePersonaByThreadKey: Record<string, StoredActivePersona | null>;
+  readonly workflowModeByThreadKey: Record<string, SquadWorkflowMode>;
+  readonly pipelineStageByThreadKey: Record<string, SquadPipelineStageId>;
+  readonly autoFallbackEnabled: boolean;
+}): void {
+  if (typeof window === "undefined") return;
+  try {
+    const payload: PersistedActivePersonaStoreV2 = {
+      activePersonaByThreadKey: state.activePersonaByThreadKey,
+      workflowModeByThreadKey: state.workflowModeByThreadKey,
+      pipelineStageByThreadKey: state.pipelineStageByThreadKey,
+      autoFallbackEnabled: state.autoFallbackEnabled,
+    };
+    window.localStorage.setItem(ACTIVE_PERSONA_STORAGE_KEY, JSON.stringify(payload));
+  } catch {
+    // Ignore storage quota or private browsing errors
+  }
+}
 
 interface ActivePersonaState {
-  readonly activePersonaByThreadKey: Record<string, ProjectPersona | null>;
+  readonly activePersonaByThreadKey: Record<string, StoredActivePersona | null>;
+  readonly workflowModeByThreadKey: Record<string, SquadWorkflowMode>;
+  readonly pipelineStageByThreadKey: Record<string, SquadPipelineStageId>;
   readonly autoFallbackEnabled: boolean;
   readonly activeStudioDialog: StudioModalKind;
-  readonly setActivePersona: (threadKey: string, persona: ProjectPersona | null) => void;
+  readonly setActivePersona: (threadKey: string, persona: ProjectPersona | string | null) => void;
+  readonly setWorkflowMode: (threadKey: string, mode: SquadWorkflowMode) => void;
+  readonly setPipelineStage: (threadKey: string, stage: SquadPipelineStageId) => void;
   readonly setAutoFallbackEnabled: (enabled: boolean) => void;
   readonly setActiveStudioDialog: (dialog: StudioModalKind) => void;
 }
 
+const initialPersistedState = loadPersistedActivePersonaState();
+
 export const useActivePersonaStore = create<ActivePersonaState>((set) => ({
-  activePersonaByThreadKey: {},
-  autoFallbackEnabled: true,
+  activePersonaByThreadKey: initialPersistedState.activePersonaByThreadKey,
+  workflowModeByThreadKey: initialPersistedState.workflowModeByThreadKey,
+  pipelineStageByThreadKey: initialPersistedState.pipelineStageByThreadKey,
+  autoFallbackEnabled: initialPersistedState.autoFallbackEnabled,
   activeStudioDialog: null,
   setActivePersona: (threadKey, persona) =>
-    set((state) => ({
-      activePersonaByThreadKey: {
+    set((state) => {
+      const nextActivePersonaByThreadKey = {
         ...state.activePersonaByThreadKey,
-        [threadKey]: persona,
-      },
-    })),
-  setAutoFallbackEnabled: (enabled) => set({ autoFallbackEnabled: enabled }),
+        [threadKey]: resolvePersonaValue(persona),
+      };
+      savePersistedActivePersonaState({
+        activePersonaByThreadKey: nextActivePersonaByThreadKey,
+        workflowModeByThreadKey: state.workflowModeByThreadKey,
+        pipelineStageByThreadKey: state.pipelineStageByThreadKey,
+        autoFallbackEnabled: state.autoFallbackEnabled,
+      });
+      return {
+        activePersonaByThreadKey: nextActivePersonaByThreadKey,
+      };
+    }),
+  setWorkflowMode: (threadKey, mode) =>
+    set((state) => {
+      const nextWorkflowModeByThreadKey = {
+        ...state.workflowModeByThreadKey,
+        [threadKey]: mode,
+      };
+      savePersistedActivePersonaState({
+        activePersonaByThreadKey: state.activePersonaByThreadKey,
+        workflowModeByThreadKey: nextWorkflowModeByThreadKey,
+        pipelineStageByThreadKey: state.pipelineStageByThreadKey,
+        autoFallbackEnabled: state.autoFallbackEnabled,
+      });
+      return {
+        workflowModeByThreadKey: nextWorkflowModeByThreadKey,
+      };
+    }),
+  setPipelineStage: (threadKey, stage) =>
+    set((state) => {
+      const nextPipelineStageByThreadKey = {
+        ...state.pipelineStageByThreadKey,
+        [threadKey]: stage,
+      };
+      savePersistedActivePersonaState({
+        activePersonaByThreadKey: state.activePersonaByThreadKey,
+        workflowModeByThreadKey: state.workflowModeByThreadKey,
+        pipelineStageByThreadKey: nextPipelineStageByThreadKey,
+        autoFallbackEnabled: state.autoFallbackEnabled,
+      });
+      return {
+        pipelineStageByThreadKey: nextPipelineStageByThreadKey,
+      };
+    }),
+  setAutoFallbackEnabled: (enabled) =>
+    set((state) => {
+      savePersistedActivePersonaState({
+        activePersonaByThreadKey: state.activePersonaByThreadKey,
+        workflowModeByThreadKey: state.workflowModeByThreadKey,
+        pipelineStageByThreadKey: state.pipelineStageByThreadKey,
+        autoFallbackEnabled: enabled,
+      });
+      return { autoFallbackEnabled: enabled };
+    }),
   setActiveStudioDialog: (dialog) => set({ activeStudioDialog: dialog }),
 }));
 
-export function readActivePersonaForThread(threadKey: string): ProjectPersona | null {
-  return useActivePersonaStore.getState().activePersonaByThreadKey[threadKey] ?? null;
+export function readActivePersonaForThread(
+  threadKey: string,
+  personas?: ReadonlyArray<ProjectPersona>,
+): ProjectPersona | null {
+  const stored = useActivePersonaStore.getState().activePersonaByThreadKey[threadKey] ?? null;
+  if (!stored) return null;
+  if (personas && personas.length > 0) {
+    return personas.find((p) => p.id === stored.id) ?? stored;
+  }
+  return stored;
+}
+
+export function readWorkflowModeForThread(threadKey: string): SquadWorkflowMode {
+  return useActivePersonaStore.getState().workflowModeByThreadKey[threadKey] ?? "direct";
+}
+
+export function readPipelineStageForThread(threadKey: string): SquadPipelineStageId {
+  return useActivePersonaStore.getState().pipelineStageByThreadKey[threadKey] ?? "produto_spec";
 }
 
 export function readProductGuardrailsForProject(
@@ -88,6 +307,50 @@ export function readProjectGuardrailsForTurn(input: {
   return readProductGuardrailsForProject(input.environmentId, input.projectCwd);
 }
 
+export function computeActiveAgentsByProviderInstanceId(
+  threadShells: ReadonlyArray<{
+    readonly providerInstanceId?: string | null | undefined;
+    readonly status?: string | null | undefined;
+    readonly isRunning?: boolean | undefined;
+    readonly latestTurn?: { readonly state?: string | null | undefined } | null | undefined;
+    readonly runtime?: unknown;
+  }>,
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const shell of threadShells) {
+    const runtimeObj =
+      shell.runtime && typeof shell.runtime === "object"
+        ? (shell.runtime as {
+            readonly providerInstanceId?: string | null | undefined;
+          })
+        : null;
+    const isRuntimeActive = shell.runtime
+      ? threadRuntimeIsActive(shell.runtime as Parameters<typeof threadRuntimeIsActive>[0])
+      : false;
+    const statusLower = (shell.status ?? "").toLowerCase();
+    const turnStateLower = (shell.latestTurn?.state ?? "").toLowerCase();
+    const isFallbackRunning =
+      shell.isRunning === true ||
+      statusLower === "running" ||
+      statusLower === "working" ||
+      statusLower === "active" ||
+      turnStateLower === "running" ||
+      turnStateLower === "in_progress" ||
+      turnStateLower === "streaming";
+
+    if (!isRuntimeActive && !isFallbackRunning) {
+      continue;
+    }
+
+    const instanceId = (runtimeObj?.providerInstanceId ?? shell.providerInstanceId ?? "").trim();
+    if (!instanceId) {
+      continue;
+    }
+    counts.set(instanceId, (counts.get(instanceId) ?? 0) + 1);
+  }
+  return counts;
+}
+
 export function useAccountLiveSummaries(
   providerInstanceEntries: ReadonlyArray<ProviderInstanceEntry>,
 ): ReadonlyArray<AccountLiveSummary> {
@@ -95,20 +358,19 @@ export function useAccountLiveSummaries(
   const nowMinute = useNowMinute();
   const now = Date.parse(`${nowMinute}:00Z`);
 
-  const activeCountByInstance = new Map<ProviderInstanceId, number>();
-  for (const shell of threadShells) {
-    if (!threadRuntimeIsActive(shell.runtime)) continue;
-    const instanceId = shell.runtime?.providerInstanceId ?? shell.providerInstanceId;
-    activeCountByInstance.set(instanceId, (activeCountByInstance.get(instanceId) ?? 0) + 1);
-  }
+  const activeCountByInstance = computeActiveAgentsByProviderInstanceId(threadShells);
 
-  return providerInstanceEntries.map((entry) =>
-    summarizeAccountLiveStatus({
+  return providerInstanceEntries.map((entry) => {
+    const summary = summarizeAccountLiveStatus({
       entry,
       activeAgentCount: activeCountByInstance.get(entry.instanceId) ?? 0,
       now,
-    }),
-  );
+    });
+    return {
+      ...summary,
+      accentColor: resolveProviderBrandColor(entry.driverKind, entry.accentColor),
+    };
+  });
 }
 
 export function useProjectTeam(input: {
