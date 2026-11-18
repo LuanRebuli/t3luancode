@@ -1,4 +1,5 @@
 import { ChildThreadApprovals } from "./chat/ChildThreadApprovals";
+import { StudioAccountsAndTeamBar } from "./team/StudioAccountsAndTeamBar";
 import { workspaceAreaProps } from "../lib/workspaceFocus";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
@@ -3389,6 +3390,21 @@ export default function ChatView(props: ChatViewProps) {
               {...(threadFindEnabled ? { onFindInThread: openThreadFindStable } : {})}
             />
           </header>
+        )}
+
+        {embedded ? null : (
+          <StudioAccountsAndTeamBar
+            environmentId={activeThread.environmentId}
+            routeThreadKey={routeThreadKey}
+            activeThreadRef={activeThreadRef}
+            projectCwd={activeProject?.workspaceRoot ?? null}
+            projectName={activeProject?.title ?? null}
+            providerInstanceEntries={providerInstanceEntries}
+            activeProviderInstanceId={activeProviderInstanceId}
+            currentModelSelection={composerSelectedModelSelection ?? activeThread.modelSelection}
+            onProviderModelSelect={onProviderModelSelectStable}
+            onOpenProviderSetup={openProviderSetupStable}
+          />
         )}
 
         <div className="relative flex min-h-0 min-w-0 flex-1">

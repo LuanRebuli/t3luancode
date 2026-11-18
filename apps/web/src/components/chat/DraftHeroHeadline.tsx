@@ -47,6 +47,7 @@ import { InlineButton } from "../ui/button";
 import { DraftProjectName } from "./DraftProjectName";
 import { DraftHeroProjectHeading } from "./DraftHeroProjectHeading";
 import { TriageDraftHero } from "./TriageDraftHero";
+import { CoworkerStudioHero } from "../team/CoworkerStudioHero";
 
 const ADD_PROJECT_VALUE = "add-project";
 
@@ -354,9 +355,24 @@ export function DraftHeroHeadline({
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col items-center">
       {hasResolvedProject && !isScratchDraft ? (
-        <DraftHeroProjectHeading projectName={activeProjectTitle ?? "Choose a project"}>
-          {projectSelector}
-        </DraftHeroProjectHeading>
+        activeProject ? (
+          <CoworkerStudioHero
+            draftId={draftId}
+            activeProject={activeProject}
+            environmentId={activeProject.environmentId}
+            projectCwd={activeProject.workspaceRoot}
+            projectName={activeProjectTitle ?? "Projeto"}
+            headingNode={
+              <DraftHeroProjectHeading projectName={activeProjectTitle ?? "Choose a project"}>
+                {projectSelector}
+              </DraftHeroProjectHeading>
+            }
+          />
+        ) : (
+          <DraftHeroProjectHeading projectName={activeProjectTitle ?? "Choose a project"}>
+            {projectSelector}
+          </DraftHeroProjectHeading>
+        )
       ) : (
         <h1 className="w-full text-center font-normal text-2xl text-foreground tracking-tight sm:text-3xl">
           {isScratchDraft ? (

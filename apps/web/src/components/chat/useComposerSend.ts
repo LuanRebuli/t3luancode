@@ -1,6 +1,16 @@
 import { isClearComposerCommand, parseSideChatCommand } from "@t3tools/shared/composerTrigger";
 import { armFreshSession, disarmFreshSession, readFreshSessionArm } from "./freshSessionArms";
 import {
+  formatPersonaDirectModePrompt,
+  resolveFallbackAccountSelection,
+  summarizeAccountLiveStatus,
+} from "../team/projectTeam.logic";
+import {
+  readActivePersonaForThread,
+  readProductGuardrailsForProject,
+  useActivePersonaStore,
+} from "../team/useProjectTeam";
+import {
   mergeDirectPreviewAnnotation,
   resolveBackgroundDraftWorkspaceOptions,
   shouldDockDraftHeroForSubmission,
@@ -849,12 +859,25 @@ export function useComposerSend(input: ComposerSendInput) {
     );
     const messageIdForSend = newMessageId();
     const messageCreatedAt = new Date().toISOString();
+    const activeDirectPersona = readActivePersonaForThread(routeThreadKey);
+    const baseTextForSend = messageTextForSend || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT;
+    const personaEnrichedText = activeDirectPersona
+      ? formatPersonaDirectModePrompt(activeDirectPersona, baseTextForSend)
+      : baseTextForSend;
+    const productGuardrails = readProductGuardrailsForProject(
+      activeProject.environmentId,
+      activeProject.workspaceRoot,
+    );
+    const guardedTextForSend =
+      productGuardrails.length > 0
+        ? `${productGuardrails}\n\n${personaEnrichedText}`
+        : personaEnrichedText;
     const outgoingMessageText = formatOutgoingPrompt({
       provider: ctxSelectedProvider,
       model: ctxSelectedModel,
       models: ctxSelectedProviderModels,
       effort: ctxSelectedPromptEffort,
-      text: messageTextForSend || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
+      text: guardedTextForSend,
     });
     if (composerRef.current?.validateProviderInput(outgoingMessageText) === false) {
       return;
@@ -1236,10 +1259,34 @@ export function useComposerSend(input: ComposerSendInput) {
       attachments: composerAttachmentsSnapshot,
       fallbackLabels: sendTitleFallbackLabels(sendSnapshot),
     });
+    const fallbackResolution = resolveFallbackAccountSelection({
+      currentSelection: ctxSelectedModelSelection,
+      summaries: providerInstanceEntries.map((entry) =>
+        summarizeAccountLiveStatus({
+          entry,
+          activeAgentCount: 0,
+          now: Date.now(),
+        }),
+      ),
+      autoFallbackEnabled: useActivePersonaStore.getState().autoFallbackEnabled,
+    });
+    if (fallbackResolution) {
+      toastManager.add({
+        type: "info",
+        title: `Auto-Fallback: ${fallbackResolution.switchedFrom.displayName} → ${fallbackResolution.switchedTo.displayName}`,
+        description: `Conta original ${fallbackResolution.switchedFrom.stateLabel.toLowerCase()}. Redirecionado para ${fallbackResolution.switchedTo.displayName} (${fallbackResolution.selection.model}).`,
+      });
+    }
+    const effectiveModelSelection = fallbackResolution
+      ? fallbackResolution.selection
+      : ctxSelectedModelSelection;
     const threadCreateModelSelection = createModelSelection(
-      ctxSelectedModelSelection.instanceId,
-      ctxSelectedModel || activeProjectDefaultModelSelection?.model || DEFAULT_MODEL,
-      ctxSelectedModelSelection.options,
+      effectiveModelSelection.instanceId,
+      effectiveModelSelection.model ||
+        ctxSelectedModel ||
+        activeProjectDefaultModelSelection?.model ||
+        DEFAULT_MODEL,
+      effectiveModelSelection.options,
     );
 
     let failure: AtomCommandResult<unknown, unknown> | null = null;
@@ -1283,7 +1330,7 @@ export function useComposerSend(input: ComposerSendInput) {
             attachments: [],
             idleCompaction: "onReturn",
           },
-          modelSelection: ctxSelectedModelSelection,
+          modelSelection: effectiveModelSelection,
           runtimeMode,
           interactionMode: DEFAULT_INTERACTION_MODE,
         },
@@ -1352,7 +1399,7 @@ export function useComposerSend(input: ComposerSendInput) {
               ),
             }),
           },
-          modelSelection: ctxSelectedModelSelection,
+          modelSelection: effectiveModelSelection,
           titleSeed: title,
           runtimeMode,
           interactionMode: DEFAULT_INTERACTION_MODE,

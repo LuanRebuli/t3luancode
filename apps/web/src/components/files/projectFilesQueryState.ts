@@ -75,7 +75,9 @@ export function getProjectFileQueryAtom(
     input: {
       cwd,
       relativePath: relativePath ?? EMPTY_PROJECT_FILE_PATH,
-      ...(relativePath === T3_PROJECT_FILE_NAME ? { allowMissing: true } : {}),
+      ...(relativePath === T3_PROJECT_FILE_NAME || relativePath?.startsWith(".t3/")
+        ? { allowMissing: true }
+        : {}),
     },
   });
 }
